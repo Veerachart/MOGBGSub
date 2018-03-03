@@ -4,10 +4,7 @@
 #include "opencv2/video/background_segm.hpp"
 #include <opencv/cv.h>
 #include <opencv/highgui.h>
-#include <cvaux.h>
 #include <math.h>
-#include <cxcore.h>
-#include <highgui.h>
 #include <opencv2/opencv.hpp>
 //#include <Eigen/Core>
 #include <algorithm>
@@ -37,6 +34,176 @@ enum HogMode {
     BODY = 1
 };
 
+//////// DetectedObjects ////////
+enum objectStatus {
+	OBJ = 0,
+	HUMAN = 1
+};
+
+class TrackedObjects {
+public:
+	TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection=RotatedRect());
+	Point2f PredictObject();
+	Point2f UpdateObject(RotatedRect objDetection, bool isHumanDetected);			// Return predicted position of the head area
+	Point2f PredictHead(Mat &obj_vel);
+	Point2f UpdateHead(RotatedRect headDetection);
+	// For checking if the new detection belongs to this objects
+	bool IsForThisObject(RotatedRect new_obj);
+	// For checking if the new detection belongs to this objects; return distance to this object
+	float distToObject(RotatedRect new_obj);
+	// For checking if the new head belongs to this objects
+	bool IsForThisHead(RotatedRect new_head);
+	// For checking if the new head belongs to this objects; return distance to this object's head prediction
+	float distToHead(RotatedRect new_head);
+	// Final check at the end of the loop: if variance becomes too large, remove
+	// Return true if deleted
+	bool CheckAndDelete();
+	float getSdBody();
+	float getSdHead();
+	Point2f getPointBody();
+	Point2f getPointHead();
+	int getStatus();
+	float threshold();
+
+private:
+	KalmanFilter objectKF;
+	KalmanFilter headKF;
+	RotatedRect objectROI;
+	RotatedRect headROI;
+	int status;
+	int countHuman;
+	float sdBody;
+	float sdHead;
+
+	Point2f img_center;
+};
+
+TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection) {
+	objectKF = KalmanFilter(4, 2, 0);
+	headKF = KalmanFilter(2, 2, 2);
+	sdBody = objDetection.size.width/4.;
+	sdHead = objDetection.size.width/4.;
+
+	objectKF.transitionMatrix = (Mat_<float>(4,4) << 1,0,1,0,0,1,0,1,0,0,1,0,0,0,0,1);
+	setIdentity(objectKF.measurementMatrix);
+	setIdentity(objectKF.processNoiseCov, Scalar::all(25.0));
+	setIdentity(objectKF.measurementNoiseCov, Scalar::all(sdBody*sdBody));
+	setIdentity(objectKF.errorCovPost, Scalar::all(sdBody*sdBody));
+	objectKF.statePost = (Mat_<float>(4,1) << objDetection.center.x, objDetection.center.y);
+	if (isHumanDetected)
+		countHuman = 1;
+	else
+		countHuman = 0;
+	if (isHeadDetected) {
+		headKF.statePost = (Mat_<float>(2,1) << headDetection.center.x, headDetection.center.y);
+		headROI = headDetection;
+	}
+	else {
+		float theta_r = objDetection.angle*CV_PI/180.;
+		Point2f headCenter = objDetection.center + 0.3125*objDetection.size.height*Point2f(sin(theta_r), -cos(theta_r));
+		headKF.statePost = (Mat_<float>(2,1) << headCenter.x, headCenter.y);
+		headROI = RotatedRect(headCenter, Size(0.375*objDetection.size.width,0.375*objDetection.size.width), objDetection.angle);
+	}
+	setIdentity(headKF.transitionMatrix);
+	setIdentity(headKF.controlMatrix);
+	setIdentity(headKF.measurementMatrix);
+	setIdentity(headKF.measurementNoiseCov, Scalar::all(sdHead*sdHead));
+	setIdentity(headKF.errorCovPost, Scalar::all(sdHead*sdHead));
+	status = OBJ;
+
+	img_center = Point2f(400.,300.);
+}
+
+Point2f TrackedObjects::PredictObject() {
+	float r = norm(getPointBody()-img_center);
+	float l = norm(getPointHead()-img_center);
+	Mat prediction = objectKF.predict();
+	sdBody = sqrt(min(objectKF.errorCovPost.at<float>(0,0), objectKF.errorCovPost.at<float>(1,1)));
+	headKF.processNoiseCov = objectKF.errorCovPost(Rect(2,2,2,2)) * l*l/r/r;
+	Mat obj_vel = prediction.rowRange(2,4) *l/r;
+	PredictHead(obj_vel);
+	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
+}
+
+Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetected) {
+	Mat measurement = (Mat_<float>(2,1) << objDetection.center.x, objDetection.center.y);
+	setIdentity(objectKF.measurementNoiseCov, Scalar::all(objDetection.size.width*objDetection.size.width/16.));
+	Mat corrected_state = objectKF.correct(measurement);
+	Mat obj_vel = corrected_state.rowRange(2,4);
+	if (isHumanDetected && status == OBJ) {
+		countHuman++;
+		if (countHuman > 5)
+			status = HUMAN;
+	}
+	sdBody = sqrt(min(objectKF.errorCovPost.at<float>(0,0), objectKF.errorCovPost.at<float>(1,1)));
+	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
+}
+
+Point2f TrackedObjects::PredictHead(Mat &obj_vel) {
+	Mat prediction = headKF.predict(obj_vel);
+	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
+	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
+}
+
+Point2f TrackedObjects::UpdateHead(RotatedRect headDetection) {
+	Mat measurement = (Mat_<float>(2,1) << headDetection.center.x, headDetection.center.y);
+	setIdentity(headKF.measurementNoiseCov, Scalar::all(headDetection.size.width*headDetection.size.width/16.));
+	Mat corrected_state = headKF.correct(measurement);
+	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
+	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
+}
+
+bool TrackedObjects::IsForThisObject(RotatedRect new_obj) {
+	Point2f predicted_pos(objectKF.statePost.at<float>(0,0), objectKF.statePost.at<float>(1,0));
+	return (norm(new_obj.center-predicted_pos) < 3*sdBody);
+}
+
+float TrackedObjects::distToObject(RotatedRect new_obj) {
+	Point2f predicted_pos(objectKF.statePost.at<float>(0,0), objectKF.statePost.at<float>(1,0));
+	return (norm(new_obj.center-predicted_pos));
+}
+
+bool TrackedObjects::IsForThisHead(RotatedRect new_head) {
+	Point2f predicted_pos(headKF.statePost.at<float>(0,0), headKF.statePost.at<float>(1,0));
+	return (norm(new_head.center-predicted_pos) < 3*sdHead);
+}
+
+float TrackedObjects::distToHead(RotatedRect new_head) {
+	Point2f predicted_pos(headKF.statePost.at<float>(0,0), headKF.statePost.at<float>(1,0));
+	return (norm(new_head.center-predicted_pos));
+}
+
+bool TrackedObjects::CheckAndDelete() {
+	return (sdBody > threshold()); // || (status != HUMAN && sdHead > 20));			// Deviation > 30
+}
+
+float TrackedObjects::threshold() {
+	float r = norm(getPointBody() - img_center);
+	return max(min(136.26 - 0.4*r, 88.),12.);
+}
+
+float TrackedObjects::getSdBody() {
+	return sdBody;
+}
+
+float TrackedObjects::getSdHead() {
+	return sdHead;
+}
+
+Point2f TrackedObjects::getPointBody() {
+	return Point2f(objectKF.statePost.at<float>(0,0), objectKF.statePost.at<float>(1,0));
+}
+
+Point2f TrackedObjects::getPointHead() {
+	return Point2f(headKF.statePost.at<float>(0,0), headKF.statePost.at<float>(1,0));
+}
+
+int TrackedObjects::getStatus() {
+	return status;
+}
+/////////////////////////////////
+
+
 class BGSub {
     Mat fgMaskMOG2;
     BackgroundSubtractorMOG2 pMOG2;
@@ -50,14 +217,14 @@ class BGSub {
     Mat contour_show;
     float scale;
     
-    double u0, v0;
+    //double u0, v0;
     
     double area_threshold;
     
     //std::ofstream *logfile;
-    double t_zero;
+    //double t_zero;
     
-    double f1,f2,f3;
+    //double f1,f2,f3;
     
     Point2f img_center;
     
@@ -83,15 +250,16 @@ class BGSub {
     
     int dilation_size;
     
-    VideoWriter outputVideo;
-    bool save_video;
+    //VideoWriter outputVideo;
+    //bool save_video;
     
-    FisheyeHOGDescriptor hog;
+    FisheyeHOGDescriptor hog_body;
+    FisheyeHOGDescriptor hog_head;
+    vector<TrackedObjects> tracked_objects;
     bool toDraw;
-    int mode;
     
     public:
-        BGSub(bool _toDraw, int _mode){
+        BGSub(bool _toDraw){
             //ROS_INFO("Tracker created.");
             area_threshold = 30;
             
@@ -153,17 +321,9 @@ class BGSub {
             pMOG2 = BackgroundSubtractorMOG2(1000, 16, true);
             pMOG2.set("backgroundRatio", 0.8);
             toDraw = _toDraw;
-            mode = _mode;
-            
-            if (mode == BODY)
-                hog.load("/home/veerachart/HOG_Classifiers/32x64_weighted/cvHOGClassifier_32x64+hard.yaml");
-            else if (mode == HEAD)
-                hog.load("/home/veerachart/HOG_Classifiers/head_fastHOG.yaml");
-            else {
-                cout << "Given wrong mode. Used BODY" << endl;
-                mode = BODY;
-                hog.load("/home/veerachart/HOG_Classifiers/32x64_weighted/cvHOGClassifier_32x64+hard.yaml");
-            }
+
+            hog_body.load("/home/veerachart/HOG_Classifiers/32x64_weighted/cvHOGClassifier_32x64+hard.yaml");
+            hog_head.load("/home/veerachart/HOG_Classifiers/head_fastHOG.yaml");
         }
             
         void processImage (Mat &input_img) {
@@ -171,6 +331,9 @@ class BGSub {
                 img_center = Point2f(input_img.cols/2, input_img.rows/2);
             Mat original_img;
             input_img.copyTo(original_img);
+
+            for (int track = 0; track < tracked_objects.size(); track++)
+            	tracked_objects[track].PredictObject();
             //cvtColor(cv_ptr->image, img_hsv, CV_BGR2HSV);
             //cvtColor(input_img, img_gray, CV_BGR2GRAY);
             
@@ -230,40 +393,184 @@ class BGSub {
             vector<vector<Point> > contours_foreground;
             findContours(fgMaskMOG2.clone(), contours_foreground, CV_RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
             
+            vector<RotatedRect> humans;
+			vector<RotatedRect> heads;
+			vector<double> weights;
+			vector<float> descriptors;
+
+			vector<RotatedRect> objects, rawBoxes;
+			vector<RotatedRect> area_heads;					// ROI to search for heads = top half of objects
+
             if(contours_foreground.size() > 0){
                 std::sort(contours_foreground.begin(), contours_foreground.end(), compareContourAreas);
                 
-                vector<RotatedRect> humans;
-                vector<double> weights;
-                vector<float> descriptors;
-                
-                vector<RotatedRect> objects, rawBoxes;
                 double threshold = 0.5;
                 groupContours(contours_foreground, objects, rawBoxes, threshold);
-            
-                if (mode == BODY)
-                    hog.detectAreaMultiScale(input_img, objects, humans, weights, descriptors, Size(20,40), Size(100,200), -0.2);
-                else if (mode == HEAD)
-                    hog.detectAreaMultiScale(input_img, objects, humans, weights, descriptors, Size(16,16), Size(50,50), 8.33);
 
-                if (toDraw) {
-                    for(int i = 0; i < contours_foreground.size(); i++){
-                        drawContours(input_img, contours_foreground, i, Scalar(0,255,0), 1, CV_AA);
-                    }
-                    for (int i = 0; i < humans.size(); i++) {
-                        Point2f rect_points[4];
-                        humans[i].points(rect_points);
-                        for(int j = 0; j < 4; j++)
-                            line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,255,0),2,8);
-                    }
-                    for (int i = 0; i < objects.size(); i++) {
-                        Point2f rect_points[4];
-                        objects[i].points(rect_points);
-                        for(int j = 0; j < 4; j++)
-                            line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,0,255),2,8);
-                        rawBoxes[i].points(rect_points);
-                        for(int j = 0; j < 4; j++)
-                            line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,0,0),1,8);
+
+                if (objects.size()) {
+                	Size size_min(1000,1000), size_max(0,0);
+                	for (int obj = 0; obj < objects.size(); obj++) {
+                		Size temp = getHumanSize(norm(objects[obj].center - img_center));
+                		if (temp.width < size_min.width)
+                			size_min = temp;
+                		if (temp.width > size_max.width)
+                			size_max = temp;
+
+                		float theta_r = objects[obj].angle*CV_PI/180.;
+                		area_heads.push_back(RotatedRect(objects[obj].center + 0.25*objects[obj].size.height*Point2f(sin(theta_r), -cos(theta_r)), Size(objects[obj].size.width,objects[obj].size.height/2), objects[obj].angle));
+                		cout << objects[obj].center << " and " << area_heads.back().center << endl;
+                	}
+                	size_min -= Size(10,20);
+                	size_max += Size(10,20);
+                	float width_head_min = max(12., 0.375*size_min.width - 10.);
+                	Size size_head_min(width_head_min, width_head_min);
+                	float width_head_max = max(12., 0.375*size_max.width + 10.);
+					Size size_head_max(width_head_max, width_head_max);
+
+					cout << size_min << " " << size_max << " " << size_head_min << " " << size_head_max << endl;
+
+                	hog_body.detectAreaMultiScale(input_img, objects, humans, weights, descriptors, size_min, size_max, 0., Size(4,2), Size(0,0), 1.05, 1.0);
+
+                	vector<int> usedTrack;
+                	bool isHuman[objects.size()];
+                	for (int obj = 0; obj < objects.size(); obj++)
+                		isHuman[obj] = false;
+
+                	vector<Point2f> intersect_points;
+                	for (int hum = 0; hum < humans.size(); hum++) {
+                		for (int obj = 0; obj < objects.size(); obj++) {
+                			if ((rotatedRectangleIntersection(objects[obj], humans[hum], intersect_points)) != INTERSECT_NONE) {
+                				isHuman[obj] = true;
+                				break;
+                			}
+                		}
+
+						if (tracked_objects.size()) {
+							int best_track = 0;
+							float best_dist = 1000;
+							for (int track = 0; track < tracked_objects.size(); track++) {
+								if (find(usedTrack.begin(), usedTrack.end(), track) != usedTrack.end())
+									continue;					// This track already got updated --> skip
+								float dist = tracked_objects[track].distToObject(humans[hum]);
+								if (dist < best_dist) {
+									best_track = track;
+									best_dist = dist;
+								}
+							}
+
+							if (best_dist < 3*tracked_objects[best_track].getSdBody()) {
+								// Update
+								cout << "Update" << endl;
+								tracked_objects[best_track].UpdateObject(humans[hum], true);
+								usedTrack.push_back(best_track);
+							}
+							else {
+								// Not within range for the existing object, create a new one
+								cout << "Added new object, starting as human." << endl;
+								tracked_objects.push_back(TrackedObjects(humans[hum], true, false));
+								usedTrack.push_back(tracked_objects.size()-1);
+							}
+						}
+						else {
+							cout << "Added new object, starting as human." << endl;
+							tracked_objects.push_back(TrackedObjects(humans[hum], true, false));
+							usedTrack.push_back(tracked_objects.size()-1);
+						}
+                	}
+
+                	for (int obj = 0; obj < objects.size(); obj++) {
+                		if (!isHuman[obj]) {
+                			// This object is not marked as a human yet, so check it as an object
+                			if (tracked_objects.size()) {
+								int best_track = 0;
+								float best_dist = 1000;
+								for (int track = 0; track < tracked_objects.size(); track++) {
+									if (find(usedTrack.begin(), usedTrack.end(), track) != usedTrack.end())
+										continue;					// This track already got updated --> skip
+									float dist = tracked_objects[track].distToObject(objects[obj]);
+									if (dist < best_dist) {
+										best_track = track;
+										best_dist = dist;
+									}
+								}
+
+								if (best_dist < 3*tracked_objects[best_track].getSdBody()) {
+									// Update
+									tracked_objects[best_track].UpdateObject(objects[obj], false);
+									usedTrack.push_back(best_track);
+								}
+								else {
+									// Not within range for the existing object, create a new one
+									cout << "Added new object, not containing human." << endl;
+									tracked_objects.push_back(TrackedObjects(objects[obj], false, false));
+									usedTrack.push_back(tracked_objects.size()-1);
+								}
+							}
+                			else {
+								// New object
+								cout << "Added new object, not containing human." << endl;
+								tracked_objects.push_back(TrackedObjects(objects[obj], false, false));
+								usedTrack.push_back(tracked_objects.size()-1);
+							}
+                		}
+                	}
+
+                	hog_head.detectAreaMultiScale(input_img, area_heads, heads, weights, descriptors, size_head_min, size_head_max, 8.33, Size(4,2), Size(0,0), 1.05, 1.0);
+
+
+                	bool hasHead[tracked_objects.size()];
+                	for (int track = 0; track < tracked_objects.size(); track++)
+                		hasHead[track] = false;
+                	for (int head = 0; head < heads.size(); head++) {
+                		int best_track = 0;
+                		float best_dist = 1000;
+                		for (int track = 0; track < tracked_objects.size(); track++) {
+                			if (hasHead[track])
+                				continue;					// already got head updated
+                			float dist = tracked_objects[track].distToHead(heads[head]);
+                			if (dist < best_dist) {
+                				best_track = track;
+                				best_dist = dist;
+                			}
+
+                			if (best_dist < 3*tracked_objects[best_track].getSdHead()) {
+                				// Update
+                				cout << "Update head" << endl;
+                				tracked_objects[best_track].UpdateHead(heads[head]);
+                				hasHead[best_track] = true;
+                			}
+                			else {
+                				// Outside 3 SD, should we add a new object here?
+                				// TODO
+                			}
+                		}
+                	}
+
+                	for (int track = 0; track < tracked_objects.size(); track++) {
+                		if (!hasHead[track]) {
+                			// If this track has not got any update for head
+                			// What should we do? TODO
+                			if (tracked_objects[track].getStatus() == HUMAN) {
+                				// If we are tracking this as HUMAN, head should be approximated
+                				// TODO
+                			}
+                		}
+                	}
+                }
+            }
+
+            // Final clean up for large variance objects
+            for (vector<TrackedObjects>::iterator it = tracked_objects.begin(); it != tracked_objects.end(); ) {
+            	if ((*it).CheckAndDelete()) {
+            		tracked_objects.erase(it);
+            		cout << "An object removed" << endl;
+            	}
+            	else {
+            		++it;
+            	}
+            }
+
                 /*for(int i = 0; i < contours_foreground.size(); i++){
                     double area = contourArea(contours_foreground[i]);
                     if(area < area_threshold){        // Too small contour
@@ -416,16 +723,50 @@ class BGSub {
                         // Supposed to be blimp. Draw for debug
                         drawContours(cv_ptr->image, contours_foreground, i, Scalar(255,0,0), 2, CV_AA);        // Draw in blue
                     }*/
-                    }
-                }
-            }
-            if (toDraw) {
-                imshow("FG Mask MOG 2", fgMaskMOG2);
-                imshow("Detection", input_img);
-            }
-            //waitKey(1);
-            //std::cout << end-begin << std::endl;
-        }
+				if (toDraw) {
+					for(int i = 0; i < contours_foreground.size(); i++){
+						drawContours(input_img, contours_foreground, i, Scalar(0,255,0), 1, CV_AA);
+					}
+					for (int i = 0; i < humans.size(); i++) {
+						Point2f rect_points[4];
+						humans[i].points(rect_points);
+						for(int j = 0; j < 4; j++)
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,255,0),2,8);
+					}
+					for (int i = 0; i < heads.size(); i++) {
+						Point2f rect_points[4];
+						heads[i].points(rect_points);
+						for(int j = 0; j < 4; j++)
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,255,255),2,8);
+					}
+					for (int i = 0; i < objects.size(); i++) {
+						Point2f rect_points[4];
+						objects[i].points(rect_points);
+						for(int j = 0; j < 4; j++)
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,0,255),2,8);
+						rawBoxes[i].points(rect_points);
+						for(int j = 0; j < 4; j++)
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,0,0),1,8);
+					}
+
+					for (int track = 0; track < tracked_objects.size(); track++) {
+						Scalar color(255,255,255);
+						TrackedObjects object = tracked_objects[track];
+						if (object.getStatus() == HUMAN)
+							color = Scalar(0,255,0);
+						circle(input_img, object.getPointBody(), 3, color, -1);
+						circle(input_img, object.getPointBody(), 3*object.getSdBody(), Scalar(192), 2);
+
+						circle(input_img, object.getPointHead(), 2, Scalar(192,192,192), -1);
+						circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
+					}
+
+					//imshow("FG Mask MOG 2", fgMaskMOG2);
+					imshow("Detection", input_img);
+				}
+				//waitKey(1);
+				//std::cout << end-begin << std::endl;
+			}
         
         void groupContours ( vector< vector<Point> > inputContours, vector<RotatedRect> &outputBoundingBoxes, vector<RotatedRect> &rawBoundingBoxes, double distanceThreshold=1.0 ) {
             if (!inputContours.size())
@@ -448,10 +789,13 @@ class BGSub {
                     Point2f center_j = rect_j.center;
                     double r_j = max(rect_j.size.width, rect_j.size.height) /2.;
                     double d_ij = norm(center_i - center_j);        // Distance between 2 contours
-                    if ((d_ij - r_i - r_j)/(r_i+r_j) < distanceThreshold) {
+                    if ((d_ij - r_i - r_j) < distanceThreshold * (r_i+r_j)) {
                         // Close - should be combined
                         //cout << "\tMerged: " << it-inputContours.begin() << " and " << it_j-inputContours.begin() << endl;
                         contour_i.insert(contour_i.end(), contour_j.begin(), contour_j.end());
+                        // update bounding box
+                        rect_i = minAreaRect(contour_i);
+                        r_i = max(rect_i.size.width, rect_i.size.height) /2.;
                         inputContours.erase(it_j);
                     }
                     else {
@@ -481,8 +825,21 @@ class BGSub {
                 w_aligned *= 1.5;
                 float h_aligned = h*cos(delta) + w*sin(delta);
                 h_aligned *= 1.5;
-                outputBoundingBoxes.push_back(RotatedRect(center, Size(w_aligned, h_aligned), theta));
+
+                Size human_size = getHumanSize(norm(center - img_center)) + Size(10,20);
+                outputBoundingBoxes.push_back(RotatedRect(center, Size(max(int(cvRound(w_aligned)),human_size.width), max(int(cvRound(h_aligned)),human_size.height)), theta));
             }
+        }
+
+        Size getHumanSize(float radius) {
+        	float width;
+        	if (radius > 280)
+        		width = 24.;
+        	else if (radius < 120)
+        		width = 88.;
+        	else
+        		width = cvRound(136.26 - 0.4*radius);
+        	return Size(width, 2*width);
         }
 };
 
@@ -492,43 +849,26 @@ void ProcessEntity(struct dirent* entity, vector<string>& file_list);
 int main (int argc, char **argv) {
     string path_dir;
     bool toDraw;
-    int mode;
-    if( argc == 4 ) {
+    if( argc == 3 ) {
         cout << argc << endl;
     	path_dir = argv[1];
     	if (atoi(argv[2]) == 0)
     	    toDraw = false;
 	    else
 	        toDraw = true;
-        if (strcmp(argv[3], "head") == 0)
-            mode = HEAD;
-        else if (strcmp(argv[3], "body") == 0)
-            mode = BODY;
-        else {
-            cout << "Wrong mode specified. Selected body as default." << endl;
-            mode = BODY;
-        }
     }
-    else if ( argc == 3) {
+    else if ( argc == 2) {
     	path_dir = "/home/veerachart/Datasets/Dataset_PIROPO/omni_1A/omni1A_test12/";
     	if (atoi(argv[1]) == 0)
     	    toDraw = false;
 	    else
 	        toDraw = true;
-        if (strcmp(argv[2], "head") == 0)
-            mode = HEAD;
-        else if (strcmp(argv[2], "body") == 0)
-            mode = BODY;
-        else {
-            cout << "Wrong mode specified. Selected body as default." << endl;
-            mode = BODY;
-        }
     }
     else {
         cerr << "ERROR, wrong arguments." << endl;
-        cout << "Usage: ./BGSub [path_dir] draw(0 or 1) mode(head or body)" << endl;
+        cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
     }
-    BGSub BG_subtractor = BGSub(toDraw, mode);
+    BGSub BG_subtractor = BGSub(toDraw);
     //cout << fixed;
 
     vector<string> file_list;
@@ -550,7 +890,7 @@ int main (int argc, char **argv) {
         cout << double(time)/getTickFrequency() << endl;
         
         if (toDraw) {
-            char c = waitKey(1);
+            char c = waitKey(0);
             if (c == 27)
                 break;
         }
