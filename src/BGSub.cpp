@@ -14,6 +14,8 @@
 #include <dirent.h>
 #include <iostream>
 #include <ctype.h>
+#include "ferns.h"
+#include "fern_based_classifier.h"
 
 template <typename T> int sgn(T val) {
     return (T(0) < val) - (val < T(0));
@@ -64,6 +66,7 @@ public:
 	Point2f getPointHead();
 	RotatedRect getBodyROI();
 	RotatedRect getHeadROI();
+	Point2f getHeadVel();
 	int getStatus();
 	float threshold();
 
@@ -139,7 +142,7 @@ Point2f TrackedObjects::PredictObject() {
 	Point2f vel1(objectKF.statePost.at<float>(3,0), objectKF.statePost.at<float>(4,0));
 	Point2f vel2 = vel1 + (l-r)*(unit_r2-unit_r1) - 0.4*(r2-r)*(l-r)/w1*unit_r2;
 
-	cout << vel1 << "\t" << vel2;
+	//cout << vel1 << "\t" << vel2;
 	Mat obj_vel = (Mat_<float>(3,1) << vel2.x, vel2.y, 0.4*prediction.at<float>(5,0));
 
 	Mat predictHead = headKF.predict(obj_vel);
@@ -215,7 +218,7 @@ float TrackedObjects::distToHead(RotatedRect new_head) {
 }
 
 bool TrackedObjects::CheckAndDelete() {
-	return (sdBody > threshold()); // || (status != HUMAN && sdHead > 20));			// Deviation > 30
+	return (sdBody > 3*objectROI.size.width); // || (status != HUMAN && sdHead > 20));			// Deviation > 30
 }
 
 float TrackedObjects::threshold() {
@@ -249,6 +252,10 @@ RotatedRect TrackedObjects::getHeadROI() {
 
 int TrackedObjects::getStatus() {
 	return status;
+}
+
+Point2f TrackedObjects::getHeadVel() {
+	return Point2f(headKF.statePost.at<float>(3,0), headKF.statePost.at<float>(4,0));
 }
 /////////////////////////////////
 
@@ -304,9 +311,14 @@ class BGSub {
     
     FisheyeHOGDescriptor hog_body;
     FisheyeHOGDescriptor hog_head;
+    FisheyeHOGDescriptor hog_direction;
+    HOGDescriptor hog_original;
     vector<TrackedObjects> tracked_objects;
+    int hog_size;
     bool toDraw;
     
+    fern_based_classifier * classifier;
+
     public:
         BGSub(bool _toDraw){
             //ROS_INFO("Tracker created.");
@@ -371,8 +383,19 @@ class BGSub {
             pMOG2.set("backgroundRatio", 0.8);
             toDraw = _toDraw;
 
+            char classifier_name[] = "classifiers/classifier_acc_400-4";
+			classifier = new fern_based_classifier(classifier_name);
+
+			hog_size = classifier->hog_image_size;
+
             hog_body.load("/home/veerachart/HOG_Classifiers/32x64_weighted/cvHOGClassifier_32x64+hard.yaml");
             hog_head.load("/home/veerachart/HOG_Classifiers/head_fastHOG.yaml");
+            hog_direction = FisheyeHOGDescriptor(Size(hog_size,hog_size), Size(hog_size/2,hog_size/2), Size(hog_size/4,hog_size/4), Size(hog_size/4,hog_size/4), 9);
+            hog_original = HOGDescriptor(Size(hog_size,hog_size), Size(hog_size/2,hog_size/2), Size(hog_size/4,hog_size/4), Size(hog_size/4,hog_size/4), 9);
+        }
+
+        ~BGSub() {
+        	delete classifier;
         }
             
         void processImage (Mat &input_img) {
@@ -609,6 +632,9 @@ class BGSub {
                 }
             }
 
+            vector<float> descriptor;
+            int output_class, output_angle;
+            vector<int> classes, angles;
             // Final clean up for large variance objects
             for (vector<TrackedObjects>::iterator it = tracked_objects.begin(); it != tracked_objects.end(); ) {
             	if ((*it).CheckAndDelete()) {
@@ -616,6 +642,37 @@ class BGSub {
             		cout << "An object removed" << endl;
             	}
             	else {
+            		// Calculate Ferns & direction
+            		if ((*it).getStatus() == HUMAN) {
+						Point2f head_vel = (*it).getHeadVel();
+						RotatedRect rect = (*it).getHeadROI();
+						float walking_dir;
+						if (norm(head_vel) < 3.0) {				// TODO Threshold adjust
+							walking_dir = -1.;					// Not enough speed, no clue
+						}
+						else {
+							walking_dir = rect.angle + atan2(head_vel.x, head_vel.x);			// Estimated walking direction relative to the radial line (0 degree head direction)
+							if (walking_dir < 0)
+								walking_dir += 360;					// [0, 360) range. Negative means no clue
+						}
+						// crop head area
+						Mat M = getRotationMatrix2D(rect.center, rect.angle, 1.0);
+						Mat rotated, cropped;
+						warpAffine(original_img, rotated, M, original_img.size(), INTER_CUBIC);
+						getRectSubPix(rotated, rect.size, rect.center, cropped);
+						resize(cropped, cropped, Size(hog_size,hog_size));
+						/////////////////
+						vector<RotatedRect> location;
+						location.push_back(rect);
+						hog_direction.compute(original_img, descriptor, location);
+						classifier->recognize_interpolate(descriptor, cropped, output_class, output_angle, walking_dir);
+						classes.push_back(output_class);
+						angles.push_back(output_angle);
+            		}
+            		else{
+            			classes.push_back(-1);
+						angles.push_back(-1);
+            		}
             		++it;
             	}
             }
@@ -773,9 +830,9 @@ class BGSub {
                         drawContours(cv_ptr->image, contours_foreground, i, Scalar(255,0,0), 2, CV_AA);        // Draw in blue
                     }*/
 				if (toDraw) {
-					for(int i = 0; i < contours_foreground.size(); i++){
-						drawContours(input_img, contours_foreground, i, Scalar(0,255,0), 1, CV_AA);
-					}
+					//for(int i = 0; i < contours_foreground.size(); i++){
+					//	drawContours(input_img, contours_foreground, i, Scalar(0,255,0), 1, CV_AA);
+					//}
 					for (int i = 0; i < humans.size(); i++) {
 						Point2f rect_points[4];
 						humans[i].points(rect_points);
@@ -810,11 +867,14 @@ class BGSub {
 							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(192,192,0),2,8);
 						//circle(input_img, object.getPointBody(), 3*object.getSdBody(), Scalar(192,192,0), 2);
 
-						circle(input_img, object.getPointHead(), 2, Scalar(192,192,192), -1);
+						//circle(input_img, object.getPointHead(), 2, Scalar(192,192,192), -1);
 						tracked_objects[track].getHeadROI().points(rect_points);
 						for(int j = 0; j < 4; j++)
 							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,192,192),2,8);
 						//circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
+						char buffer[10];
+						sprintf(buffer, "%d: %d", classes[track], angles[track]);
+						putText(input_img, buffer , rect_points[1]+Point2f(-10,-10), FONT_HERSHEY_PLAIN, 1, Scalar(0,0,255), 2);
 					}
 
 					//imshow("FG Mask MOG 2", fgMaskMOG2);
