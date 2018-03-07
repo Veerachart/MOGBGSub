@@ -93,7 +93,7 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 													 0,0,0,0,1,0,
 													 0,0,0,0,0,1);
 	setIdentity(objectKF.measurementMatrix);
-	setIdentity(objectKF.processNoiseCov, Scalar::all(25.0));
+	setIdentity(objectKF.processNoiseCov, Scalar::all(16.0));
 	setIdentity(objectKF.measurementNoiseCov, Scalar::all(sdBody*sdBody));
 	setIdentity(objectKF.errorCovPost, Scalar::all(sdBody*sdBody));
 	objectKF.statePost = (Mat_<float>(6,1) << objDetection.center.x, objDetection.center.y, objDetection.size.width, 0, 0, 0);
@@ -125,13 +125,23 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 Point2f TrackedObjects::PredictObject() {
 	float r = norm(getPointBody()-img_center);
 	float l = norm(getPointHead()-img_center);
+	float w1 = objectROI.size.width;
+	Point2f unit_r1 = (1./r) * (getPointBody()-img_center);
 	Mat prediction = objectKF.predict();
+	Point2f p2 = Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
+	float r2 = norm(p2-img_center);
+	Point2f unit_r2 = (1./r2) * (p2-img_center);
 	sdBody = sqrt(min(objectKF.errorCovPost.at<float>(0,0), objectKF.errorCovPost.at<float>(1,1)));
-	objectROI = RotatedRect(Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0)),
+	objectROI = RotatedRect(p2,
 							Size2f(prediction.at<float>(2,0), 2*prediction.at<float>(2,0)),
 							atan2(prediction.at<float>(0,0) - img_center.x, img_center.y - prediction.at<float>(1,0)) *180./CV_PI);
-	headKF.processNoiseCov = objectKF.errorCovPost(Rect(3,3,3,3)) * l*l/r/r;
-	Mat obj_vel = prediction.rowRange(3,6) *l/r;
+	headKF.processNoiseCov = objectKF.errorCovPost(Rect(3,3,3,3));
+	Point2f vel1(objectKF.statePost.at<float>(3,0), objectKF.statePost.at<float>(4,0));
+	Point2f vel2 = vel1 + (l-r)*(unit_r2-unit_r1) - 0.4*(r2-r)*(l-r)/w1*unit_r2;
+
+	cout << vel1 << "\t" << vel2;
+	Mat obj_vel = (Mat_<float>(3,1) << vel2.x, vel2.y, 0.4*prediction.at<float>(5,0));
+
 	Mat predictHead = headKF.predict(obj_vel);
 	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
 	headROI = RotatedRect(Point2f(predictHead.at<float>(0,0), predictHead.at<float>(1,0)),
@@ -152,7 +162,7 @@ Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetec
 		measurement = (Mat_<float>(3,1) << objDetection.center.x, objDetection.center.y, objDetection.size.width);
 	}
 	else {
-		setIdentity(objectKF.measurementNoiseCov, Scalar::all(objDetection.size.width*objDetection.size.width/4.));		// Larger variance for object
+		setIdentity(objectKF.measurementNoiseCov, Scalar::all(objDetection.size.width*objDetection.size.width/16.));		// Larger variance for object
 		measurement = (Mat_<float>(3,1) << objDetection.center.x, objDetection.center.y, objectROI.size.width);
 	}
 	Mat corrected_state = objectKF.correct(measurement);
@@ -458,7 +468,7 @@ class BGSub {
 
                 		float theta_r = objects[obj].angle*CV_PI/180.;
                 		area_heads.push_back(RotatedRect(objects[obj].center + 0.25*objects[obj].size.height*Point2f(sin(theta_r), -cos(theta_r)), Size(objects[obj].size.width,objects[obj].size.height/2), objects[obj].angle));
-                		cout << objects[obj].center << " and " << area_heads.back().center << endl;
+                		//cout << objects[obj].center << " and " << area_heads.back().center << endl;
                 	}
                 	size_min -= Size(10,20);
                 	size_max += Size(10,20);
@@ -467,7 +477,7 @@ class BGSub {
                 	float width_head_max = max(12., 0.375*size_max.width + 10.);
 					Size size_head_max(width_head_max, width_head_max);
 
-					cout << size_min << " " << size_max << " " << size_head_min << " " << size_head_max << endl;
+					//cout << size_min << " " << size_max << " " << size_head_min << " " << size_head_max << endl;
 
                 	hog_body.detectAreaMultiScale(input_img, objects, humans, weights, descriptors, size_min, size_max, 0., Size(4,2), Size(0,0), 1.05, 1.0);
 
