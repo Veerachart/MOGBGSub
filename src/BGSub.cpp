@@ -47,7 +47,7 @@ public:
 	TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection=RotatedRect());
 	Point2f PredictObject();
 	Point2f UpdateObject(RotatedRect objDetection, bool isHumanDetected);			// Return predicted position of the head area
-	Point2f PredictHead(Mat &obj_vel);
+	//Point2f PredictHead(Mat &obj_vel);
 	Point2f UpdateHead(RotatedRect headDetection);
 	// For checking if the new detection belongs to this objects
 	bool IsForThisObject(RotatedRect new_obj);
@@ -80,12 +80,18 @@ private:
 	float sdBody;
 	float sdHead;
 
+	// For estimating head position & size based on human detection
+	float heightRatio;		// head's height relative to window's height
+	float deltaAngle;
+	float headRatio;
+
 	Point2f img_center;
 };
 
 TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection) {
 	objectKF = KalmanFilter(6, 3, 0);
-	headKF = KalmanFilter(3, 3, 3);
+	//headKF = KalmanFilter(3, 3, 3);
+	headKF = KalmanFilter(6, 3, 0);
 	sdBody = objDetection.size.width/4.;
 	sdHead = objDetection.size.width/4.;
 
@@ -101,32 +107,63 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 	setIdentity(objectKF.errorCovPost, Scalar::all(sdBody*sdBody));
 	objectKF.statePost = (Mat_<float>(6,1) << objDetection.center.x, objDetection.center.y, objDetection.size.width, 0, 0, 0);
 	objectROI = objDetection;
+
+	headKF.transitionMatrix = (Mat_<float>(6,6) << 1,0,0,1,0,0,
+												   0,1,0,0,1,0,
+												   0,0,1,0,0,1,
+												   0,0,0,1,0,0,
+												   0,0,0,0,1,0,
+												   0,0,0,0,0,1);
+	setIdentity(headKF.measurementMatrix);
+	setIdentity(headKF.processNoiseCov, Scalar::all(16.0));
+	setIdentity(headKF.measurementNoiseCov, Scalar::all(sdHead*sdHead));
+	setIdentity(headKF.errorCovPost, Scalar::all(sdHead*sdHead));
 	if (isHumanDetected)
 		countHuman = 1;
 	else
 		countHuman = 0;
 	if (isHeadDetected) {
-		headKF.statePost = (Mat_<float>(3,1) << headDetection.center.x, headDetection.center.y,headDetection.size.width);
+		heightRatio = norm(headDetection.center - objDetection.center)/ objDetection.size.height;
+		deltaAngle = headDetection.angle - objDetection.angle;
+		headRatio = headDetection.size.width/objDetection.size.width;
+		headKF.statePost = (Mat_<float>(6,1) << headDetection.center.x, headDetection.center.y,headDetection.size.width, 0, 0, 0);
 		headROI = headDetection;
 	}
 	else {
-		float theta_r = objDetection.angle*CV_PI/180.;
-		Point2f headCenter = objDetection.center + 0.3125*objDetection.size.height*Point2f(sin(theta_r), -cos(theta_r));
-		headKF.statePost = (Mat_<float>(3,1) << headCenter.x, headCenter.y, 0.375*objDetection.size.width);
-		headROI = RotatedRect(headCenter, Size(0.375*objDetection.size.width,0.375*objDetection.size.width), objDetection.angle);
+		heightRatio = 0.3125;
+		deltaAngle = 0.;
+		headRatio = 0.375;
+		float theta_r = (objDetection.angle + deltaAngle)*CV_PI/180.;
+		Point2f headCenter = objDetection.center + heightRatio*objDetection.size.height*Point2f(sin(theta_r), -cos(theta_r));
+		headKF.statePost = (Mat_<float>(6,1) << headCenter.x, headCenter.y, headRatio*objDetection.size.width, 0, 0, 0);
+		headROI = RotatedRect(headCenter, Size(headRatio*objDetection.size.width, headRatio*objDetection.size.width), objDetection.angle);
 	}
-	setIdentity(headKF.transitionMatrix);
-	setIdentity(headKF.controlMatrix);
-	setIdentity(headKF.measurementMatrix);
-	setIdentity(headKF.measurementNoiseCov, Scalar::all(sdHead*sdHead));
-	setIdentity(headKF.errorCovPost, Scalar::all(sdHead*sdHead));
+	//setIdentity(headKF.transitionMatrix);
+	//setIdentity(headKF.controlMatrix);
+	//setIdentity(headKF.measurementMatrix);
+	//setIdentity(headKF.measurementNoiseCov, Scalar::all(sdHead*sdHead));
+	//setIdentity(headKF.errorCovPost, Scalar::all(sdHead*sdHead));
 	status = OBJ;
 
 	img_center = Point2f(400.,300.);
 }
 
 Point2f TrackedObjects::PredictObject() {
-	float r = norm(getPointBody()-img_center);
+	Mat prediction = objectKF.predict();
+	sdBody = sqrt(min(objectKF.errorCovPost.at<float>(0,0), objectKF.errorCovPost.at<float>(1,1)));
+	objectROI = RotatedRect(Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0)),
+							Size2f(prediction.at<float>(2,0), 2*prediction.at<float>(2,0)),
+							atan2(prediction.at<float>(0,0) - img_center.x, img_center.y - prediction.at<float>(1,0)) *180./CV_PI);
+
+	Mat predictHead = headKF.predict();
+	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
+	headROI = RotatedRect(Point2f(predictHead.at<float>(0,0), predictHead.at<float>(1,0)),
+						  Size2f(predictHead.at<float>(2,0), predictHead.at<float>(2,0)),
+						  atan2(predictHead.at<float>(0,0) - img_center.x, img_center.y - predictHead.at<float>(1,0)) *180./CV_PI);
+
+	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
+
+	/*float r = norm(getPointBody()-img_center);
 	float l = norm(getPointHead()-img_center);
 	float w1 = objectROI.size.width;
 	Point2f unit_r1 = (1./r) * (getPointBody()-img_center);
@@ -150,7 +187,7 @@ Point2f TrackedObjects::PredictObject() {
 	headROI = RotatedRect(Point2f(predictHead.at<float>(0,0), predictHead.at<float>(1,0)),
 						  Size2f(predictHead.at<float>(2,0), predictHead.at<float>(2,0)),
 						  atan2(predictHead.at<float>(0,0) - img_center.x, img_center.y - predictHead.at<float>(1,0)) *180./CV_PI);
-	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
+	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));*/
 }
 
 Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetected) {
@@ -172,19 +209,34 @@ Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetec
 	objectROI = RotatedRect(Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0)),
 							Size2f(corrected_state.at<float>(2,0), 2*corrected_state.at<float>(2,0)),
 							atan2(corrected_state.at<float>(0,0) - img_center.x, img_center.y - corrected_state.at<float>(1,0)) *180./CV_PI);
-	Mat obj_vel = corrected_state.rowRange(3,6);
+
+	// After updating the object, use it as weak measurement of head
+	float theta_r = (objectROI.angle + deltaAngle)*CV_PI/180.;
+	Point2f headCenter = objectROI.center + heightRatio*objDetection.size.height*Point2f(sin(theta_r), -cos(theta_r));
+	Mat measurement_frombody = (Mat_<float>(3,1) << headCenter.x, headCenter.y, headRatio*objectROI.size.width);
+	setIdentity(headKF.measurementNoiseCov, Scalar::all(objectROI.size.width*objectROI.size.width/16.));
+	Mat corrected_head = headKF.correct(measurement_frombody);
+	headROI = RotatedRect(Point2f(corrected_head.at<float>(0,0), corrected_head.at<float>(1,0)),
+						  Size(corrected_head.at<float>(2,0), corrected_head.at<float>(2,0)),
+						  atan2(corrected_head.at<float>(0,0) - img_center.x, img_center.y - corrected_head.at<float>(1,0)) *180./CV_PI);
+	//heightRatio = 0.3125;
+	//deltaAngle = 0.;
+	//headRatio = 0.375;
+
+	//Mat obj_vel = corrected_state.rowRange(3,6);
 	sdBody = sqrt(min(objectKF.errorCovPost.at<float>(0,0), objectKF.errorCovPost.at<float>(1,1)));
+	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
 	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
 }
 
-Point2f TrackedObjects::PredictHead(Mat &obj_vel) {
+/*Point2f TrackedObjects::PredictHead(Mat &obj_vel) {
 	Mat prediction = headKF.predict(obj_vel);
 	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
 	headROI = RotatedRect(Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0)),
 						  Size2f(prediction.at<float>(2,0), prediction.at<float>(2,0)),
 						  atan2(prediction.at<float>(0,0) - img_center.x, img_center.y - prediction.at<float>(1,0)) *180./CV_PI);
 	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
-}
+}*/
 
 Point2f TrackedObjects::UpdateHead(RotatedRect headDetection) {
 	Mat measurement = (Mat_<float>(3,1) << headDetection.center.x, headDetection.center.y, headDetection.size.width);
@@ -194,6 +246,9 @@ Point2f TrackedObjects::UpdateHead(RotatedRect headDetection) {
 	headROI = RotatedRect(Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0)),
 						  Size2f(corrected_state.at<float>(2,0), corrected_state.at<float>(2,0)),
 						  atan2(corrected_state.at<float>(0,0) - img_center.x, img_center.y - corrected_state.at<float>(1,0)) *180./CV_PI);
+	heightRatio = norm(headROI.center - objectROI.center) / objectROI.size.height;
+	deltaAngle = headROI.angle - objectROI.angle;
+	headRatio = headROI.size.height/objectROI.size.height;
 	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
 }
 
@@ -385,6 +440,7 @@ class BGSub {
 
             char classifier_name[] = "classifiers/classifier_acc_400-4";
 			classifier = new fern_based_classifier(classifier_name);
+			cout << classifier->number_of_classes << endl;
 
 			hog_size = classifier->hog_image_size;
 
@@ -651,10 +707,12 @@ class BGSub {
 							walking_dir = -1.;					// Not enough speed, no clue
 						}
 						else {
-							walking_dir = rect.angle + atan2(head_vel.x, head_vel.x);			// Estimated walking direction relative to the radial line (0 degree head direction)
+							walking_dir = rect.angle + atan2(head_vel.x, head_vel.y)*180./CV_PI;			// Estimated walking direction relative to the radial line (0 degree head direction)
 							if (walking_dir < 0)
 								walking_dir += 360;					// [0, 360) range. Negative means no clue
 						}
+						cout << head_vel << " Moving in " << walking_dir << " degree direction" << endl;
+						cout << rect.size << endl;
 						// crop head area
 						Mat M = getRotationMatrix2D(rect.center, rect.angle, 1.0);
 						Mat rotated, cropped;
@@ -1006,7 +1064,7 @@ int main (int argc, char **argv) {
         cout << double(time)/getTickFrequency() << endl;
         
         if (toDraw) {
-            char c = waitKey(0);
+            char c = waitKey(1);
             if (c == 27)
                 break;
         }
