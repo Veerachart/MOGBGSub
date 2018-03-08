@@ -212,7 +212,7 @@ Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetec
 
 	// After updating the object, use it as weak measurement of head
 	float theta_r = (objectROI.angle + deltaAngle)*CV_PI/180.;
-	Point2f headCenter = objectROI.center + heightRatio*objDetection.size.height*Point2f(sin(theta_r), -cos(theta_r));
+	Point2f headCenter = objectROI.center + heightRatio*objectROI.size.height*Point2f(sin(theta_r), -cos(theta_r));
 	Mat measurement_frombody = (Mat_<float>(3,1) << headCenter.x, headCenter.y, headRatio*objectROI.size.width);
 	setIdentity(headKF.measurementNoiseCov, Scalar::all(objectROI.size.width*objectROI.size.width/16.));
 	Mat corrected_head = headKF.correct(measurement_frombody);
@@ -248,7 +248,7 @@ Point2f TrackedObjects::UpdateHead(RotatedRect headDetection) {
 						  atan2(corrected_state.at<float>(0,0) - img_center.x, img_center.y - corrected_state.at<float>(1,0)) *180./CV_PI);
 	heightRatio = norm(headROI.center - objectROI.center) / objectROI.size.height;
 	deltaAngle = headROI.angle - objectROI.angle;
-	headRatio = headROI.size.height/objectROI.size.height;
+	headRatio = headROI.size.width/objectROI.size.width;
 	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
 }
 
@@ -273,7 +273,7 @@ float TrackedObjects::distToHead(RotatedRect new_head) {
 }
 
 bool TrackedObjects::CheckAndDelete() {
-	return (sdBody > 3*objectROI.size.width); // || (status != HUMAN && sdHead > 20));			// Deviation > 30
+	return (sdBody > 1.5*objectROI.size.width || sdHead > 1.5*objectROI.size.width); // || (status != HUMAN && sdHead > 20));			// Deviation > 30
 }
 
 float TrackedObjects::threshold() {
@@ -462,6 +462,29 @@ class BGSub {
 
             for (int track = 0; track < tracked_objects.size(); track++)
             	tracked_objects[track].PredictObject();
+
+            /*Mat draw;
+			input_img.copyTo(draw);
+
+            for (int track = 0; track < tracked_objects.size(); track++) {
+				Scalar color(255,255,255);
+				TrackedObjects object = tracked_objects[track];
+				if (object.getStatus() == HUMAN)
+					color = Scalar(0,255,0);
+				circle(draw, object.getPointBody(), 3, color, -1);
+				Point2f rect_points[4];
+				tracked_objects[track].getBodyROI().points(rect_points);
+				for(int j = 0; j < 4; j++)
+					line( draw, rect_points[j], rect_points[(j+1)%4], Scalar(192,192,0),2,8);
+				//circle(input_img, object.getPointBody(), 3*object.getSdBody(), Scalar(192,192,0), 2);
+
+				//circle(input_img, object.getPointHead(), 2, Scalar(192,192,192), -1);
+				tracked_objects[track].getHeadROI().points(rect_points);
+				for(int j = 0; j < 4; j++)
+					line( draw, rect_points[j], rect_points[(j+1)%4], Scalar(0,192,192),2,8);
+				circle(draw, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
+			}
+            imshow("After predict", draw);*/
             //cvtColor(cv_ptr->image, img_hsv, CV_BGR2HSV);
             //cvtColor(input_img, img_gray, CV_BGR2GRAY);
             
@@ -644,6 +667,27 @@ class BGSub {
                 		}
                 	}
 
+                	/*input_img.copyTo(draw);
+                	for (int track = 0; track < tracked_objects.size(); track++) {
+						Scalar color(255,255,255);
+						TrackedObjects object = tracked_objects[track];
+						if (object.getStatus() == HUMAN)
+							color = Scalar(0,255,0);
+						circle(draw, object.getPointBody(), 3, color, -1);
+						Point2f rect_points[4];
+						tracked_objects[track].getBodyROI().points(rect_points);
+						for(int j = 0; j < 4; j++)
+							line( draw, rect_points[j], rect_points[(j+1)%4], Scalar(192,192,0),2,8);
+						//circle(input_img, object.getPointBody(), 3*object.getSdBody(), Scalar(192,192,0), 2);
+
+						//circle(input_img, object.getPointHead(), 2, Scalar(192,192,192), -1);
+						tracked_objects[track].getHeadROI().points(rect_points);
+						for(int j = 0; j < 4; j++)
+							line( draw, rect_points[j], rect_points[(j+1)%4], Scalar(0,192,192),2,8);
+						circle(draw, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
+					}
+					imshow("After human detect", draw);*/
+
                 	hog_head.detectAreaMultiScale(input_img, area_heads, heads, weights, descriptors, size_head_min, size_head_max, 8.2, Size(4,2), Size(0,0), 1.05, 1.0);
 
 
@@ -703,7 +747,7 @@ class BGSub {
 						Point2f head_vel = (*it).getHeadVel();
 						RotatedRect rect = (*it).getHeadROI();
 						float walking_dir;
-						if (norm(head_vel) < 3.0) {				// TODO Threshold adjust
+						if (norm(head_vel) < 1.5) {				// TODO Threshold adjust
 							walking_dir = -1.;					// Not enough speed, no clue
 						}
 						else {
@@ -929,7 +973,7 @@ class BGSub {
 						tracked_objects[track].getHeadROI().points(rect_points);
 						for(int j = 0; j < 4; j++)
 							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,192,192),2,8);
-						//circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
+						circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
 						char buffer[10];
 						sprintf(buffer, "%d: %d", classes[track], angles[track]);
 						putText(input_img, buffer , rect_points[1]+Point2f(-10,-10), FONT_HERSHEY_PLAIN, 1, Scalar(0,0,255), 2);
@@ -1064,7 +1108,7 @@ int main (int argc, char **argv) {
         cout << double(time)/getTickFrequency() << endl;
         
         if (toDraw) {
-            char c = waitKey(1);
+            char c = waitKey(0);
             if (c == 27)
                 break;
         }
