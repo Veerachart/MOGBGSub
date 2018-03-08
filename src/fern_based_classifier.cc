@@ -400,9 +400,9 @@ void fern_based_classifier::recognize_interpolate(vector<float> &fisheye_HOG_des
 	int class_index = 0;
 	double class_score = distribution[0] + walking_probs[0];
 	for (int k = 0; k < number_of_classes; k++) {
-		cout << distribution[k] << ",";
+		//cout << distribution[k] << ",";
 		distribution[k] += walking_probs[k];				// Apply walking probability
-		cout << distribution[k] << endl;
+		//cout << distribution[k] << endl;
 		if (distribution[k] > class_score) {
 			class_index = k;
 			class_score = distribution[k];
@@ -486,9 +486,9 @@ void fern_based_classifier::recognize_interpolate(float *fisheye_HOG_descriptor,
 	int class_index = 0;
 	double class_score = distribution[0];
 	for (int k = 0; k < number_of_classes; k++) {
-		cout << distribution[k] << ",";
+		//cout << distribution[k] << ",";
 		distribution[k] += walking_probs[k];				// Apply walking probability
-		cout << distribution[k] << endl;
+		//cout << distribution[k] << endl;
 		if (distribution[k] > class_score) {
 			class_index = k;
 			class_score = distribution[k];

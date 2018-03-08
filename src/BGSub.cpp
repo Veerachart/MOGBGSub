@@ -69,6 +69,8 @@ public:
 	Point2f getHeadVel();
 	int getStatus();
 	float threshold();
+	int getDirection();
+	void updateDirection(int estimation, int movingDirection);
 
 private:
 	KalmanFilter objectKF;
@@ -84,6 +86,9 @@ private:
 	float heightRatio;		// head's height relative to window's height
 	float deltaAngle;
 	float headRatio;
+
+	// For tracking of head direction
+	int headDirection;
 
 	Point2f img_center;
 };
@@ -144,6 +149,8 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 	//setIdentity(headKF.measurementNoiseCov, Scalar::all(sdHead*sdHead));
 	//setIdentity(headKF.errorCovPost, Scalar::all(sdHead*sdHead));
 	status = OBJ;
+
+	headDirection = -1;			// Init
 
 	img_center = Point2f(400.,300.);
 }
@@ -312,6 +319,42 @@ int TrackedObjects::getStatus() {
 Point2f TrackedObjects::getHeadVel() {
 	return Point2f(headKF.statePost.at<float>(3,0), headKF.statePost.at<float>(4,0));
 }
+
+int TrackedObjects::getDirection() {
+	return headDirection;
+}
+
+void TrackedObjects::updateDirection(int estimation, int movingDirection) {
+	if (headDirection < 0) {
+		headDirection = estimation;
+		return;
+	}
+
+	int diff = abs(estimation - headDirection);
+	if (diff <= 45) {				// <= 45 degree change
+		headDirection = (headDirection + estimation) /2;
+	}
+	else if ( diff >= 315) {		// <= 45 degree change, crossing the line 0,360
+		headDirection = (headDirection + estimation + 360) /2;
+		if (headDirection > 360)
+			headDirection -= 360;
+	}
+	// More than that, update with the moving direction instead
+	else {
+		if (movingDirection > 0) {
+			// Moving
+			if (abs(movingDirection - headDirection) >= 180) {
+				// crossing 0,360 line
+				headDirection = (headDirection + movingDirection + 360) /2;
+				if (headDirection > 360)
+					headDirection -= 360;
+			}
+			else {
+				headDirection = (headDirection + movingDirection) /2;
+			}
+		}
+	}
+}
 /////////////////////////////////
 
 
@@ -440,7 +483,6 @@ class BGSub {
 
             char classifier_name[] = "classifiers/classifier_acc_400-4";
 			classifier = new fern_based_classifier(classifier_name);
-			cout << classifier->number_of_classes << endl;
 
 			hog_size = classifier->hog_image_size;
 
@@ -737,15 +779,15 @@ class BGSub {
             vector<int> classes, angles;
             // Final clean up for large variance objects
             for (vector<TrackedObjects>::iterator it = tracked_objects.begin(); it != tracked_objects.end(); ) {
-            	if ((*it).CheckAndDelete()) {
+            	if (it->CheckAndDelete()) {
             		tracked_objects.erase(it);
             		cout << "An object removed" << endl;
             	}
             	else {
             		// Calculate Ferns & direction
-            		if ((*it).getStatus() == HUMAN) {
-						Point2f head_vel = (*it).getHeadVel();
-						RotatedRect rect = (*it).getHeadROI();
+            		if (it->getStatus() == HUMAN) {
+						Point2f head_vel = it->getHeadVel();
+						RotatedRect rect = it->getHeadROI();
 						float walking_dir;
 						if (norm(head_vel) < 1.5) {				// TODO Threshold adjust
 							walking_dir = -1.;					// Not enough speed, no clue
@@ -755,8 +797,7 @@ class BGSub {
 							if (walking_dir < 0)
 								walking_dir += 360;					// [0, 360) range. Negative means no clue
 						}
-						cout << head_vel << " Moving in " << walking_dir << " degree direction" << endl;
-						cout << rect.size << endl;
+						//cout << head_vel << " Moving in " << walking_dir << " degree direction" << endl;
 						// crop head area
 						Mat M = getRotationMatrix2D(rect.center, rect.angle, 1.0);
 						Mat rotated, cropped;
@@ -768,6 +809,7 @@ class BGSub {
 						location.push_back(rect);
 						hog_direction.compute(original_img, descriptor, location);
 						classifier->recognize_interpolate(descriptor, cropped, output_class, output_angle, walking_dir);
+						it->updateDirection(output_angle, int(cvRound(walking_dir)));
 						classes.push_back(output_class);
 						angles.push_back(output_angle);
             		}
@@ -975,11 +1017,11 @@ class BGSub {
 							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,192,192),2,8);
 						circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
 						char buffer[10];
-						sprintf(buffer, "%d: %d", classes[track], angles[track]);
-						putText(input_img, buffer , rect_points[1]+Point2f(-10,-10), FONT_HERSHEY_PLAIN, 1, Scalar(0,0,255), 2);
+						sprintf(buffer, "%d, %d", angles[track], tracked_objects[track].getDirection());
+						putText(input_img, buffer , rect_points[1]+Point2f(-10,-10), FONT_HERSHEY_PLAIN, 1, Scalar(255,0,255), 2);
 					}
 
-					//imshow("FG Mask MOG 2", fgMaskMOG2);
+					imshow("FG Mask MOG 2", fgMaskMOG2);
 					imshow("Detection", input_img);
 				}
 				//waitKey(1);
@@ -1068,7 +1110,6 @@ int main (int argc, char **argv) {
     string path_dir;
     bool toDraw;
     if( argc == 3 ) {
-        cout << argc << endl;
     	path_dir = argv[1];
     	if (atoi(argv[2]) == 0)
     	    toDraw = false;
