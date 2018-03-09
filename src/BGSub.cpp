@@ -337,6 +337,24 @@ void TrackedObjects::updateDirection(int estimation, int movingDirection) {
 		return;
 	}
 
+	if (estimation < 0) {
+		// When the head is out of the frame and direction cannot be estimated
+		// Use only moving direction
+		if (movingDirection > 0) {
+			// Moving
+			if (abs(movingDirection - headDirection) >= 180) {
+				// crossing 0,360 line
+				headDirection = cvRound((headDirection + movingDirection + 360)/2.);
+				if (headDirection > 360)
+					headDirection -= 360;
+			}
+			else {
+				headDirection = cvRound((headDirection + movingDirection)/2.);
+			}
+		}
+		return;
+	}
+
 	int diff = abs(estimation - headDirection);
 	if (diff <= 45) {				// <= 45 degree change
 		headDirection = cvRound((headDirection + estimation)/2.);
@@ -802,6 +820,7 @@ class BGSub {
             		if (it->getStatus() == HUMAN) {
 						Point2f head_vel = it->getHeadVel();
 						RotatedRect rect = it->getHeadROI();
+
 						float walking_dir;
 						if (norm(head_vel) < 1.5) {				// TODO Threshold adjust
 							walking_dir = -1.;					// Not enough speed, no clue
@@ -812,7 +831,25 @@ class BGSub {
 								walking_dir += 360;					// [0, 360) range. Negative means no clue
 						}
 						//cout << head_vel << " Moving in " << walking_dir << " degree direction" << endl;
-						cout << rect.center << " " << rect.size << " " << rect.angle << endl;
+						//cout << rect.center << " " << rect.size << " " << rect.angle << endl;
+
+						// Check vertices within frame
+						Point2f vertices[4];
+						rect.points(vertices);
+						int v;
+						for (v = 0; v < 4; v++) {
+							if (vertices[v].x < 0 || vertices[v].x >= input_img.cols || vertices[v].y < 0 || vertices[v].y >= input_img.rows) {
+								break;
+							}
+						}
+						if (v < 4) {					// At least one out
+							//cout << "OB" << endl;
+							classes.push_back(-1);
+							angles.push_back(-1);
+							it->updateDirection(-1, int(cvRound(walking_dir)));
+							++it;
+							continue;
+						}
 						// crop head area
 						Mat M = getRotationMatrix2D(rect.center, rect.angle, 1.0);
 						Mat rotated, cropped;
@@ -1038,9 +1075,8 @@ class BGSub {
 
 					imshow("FG Mask MOG 2", fgMaskMOG2);
 					imshow("Detection", input_img);
-
-					outputVideo << input_img;
 				}
+				outputVideo << input_img;
 				//waitKey(1);
 				//std::cout << end-begin << std::endl;
 			}
@@ -1155,6 +1191,8 @@ int main (int argc, char **argv) {
     
     for(;;)
     {
+    	if (idx >= file_list.size())
+    		break;
         frame = imread(path_dir+file_list[idx]);
         //int64 start = getTickCount();
         if( frame.data == NULL )
