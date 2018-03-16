@@ -155,6 +155,7 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 
 	headDirection = -1;			// Init
 
+	//img_center = Point2f(384.,384.);
 	img_center = Point2f(400.,300.);
 }
 
@@ -429,7 +430,7 @@ class BGSub {
     
     int dilation_size;
     
-    VideoWriter outputVideo;
+    //VideoWriter outputVideo;
     //bool save_video;
     
     FisheyeHOGDescriptor hog_body;
@@ -503,14 +504,20 @@ class BGSub {
                 }
             }*/
 
-            string videoName = "omni1A_test12.avi";
-            outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 600), true);
-			if (!outputVideo.isOpened()) {
-				cerr << "Could not write video." << endl;
-				return;
-			}
-            pMOG2 = BackgroundSubtractorMOG2(1000, 16, true);
-            pMOG2.set("backgroundRatio", 0.8);
+            //string videoName = "omni1A_test1_bgslib.avi";
+            //outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 600), true);
+            ////outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
+			//if (!outputVideo.isOpened()) {
+			//	cerr << "Could not write video." << endl;
+			//	return;
+			//}
+            pMOG2 = BackgroundSubtractorMOG2(1000, 50.0, true);
+            pMOG2.set("backgroundRatio", 0.75);
+            pMOG2.set("fTau", 0.6);
+            pMOG2.set("nmixtures", 3);
+            pMOG2.set("varThresholdGen", 25.0);
+            pMOG2.set("fVarInit", 36.0);
+            pMOG2.set("fVarMax", 5*36.0);
             toDraw = _toDraw;
 
             char classifier_name[] = "classifiers/classifier_acc_400-4";
@@ -609,7 +616,11 @@ class BGSub {
             
             //pMOG2(img_gray, fgMaskMOG2);
             pMOG2(input_img, fgMaskMOG2);
-            threshold(fgMaskMOG2, fgMaskMOG2, 128, 255, THRESH_BINARY);
+            //Mat save = Mat::zeros(fgMaskMOG2.size(), CV_8UC3);
+			//cvtColor(fgMaskMOG2, save, CV_GRAY2BGR);
+			threshold(fgMaskMOG2, fgMaskMOG2, 128, 255, THRESH_BINARY);
+			//outputVideo << save;
+			imshow("FG Mask MOG 2", fgMaskMOG2);
                         
             morphologyEx(fgMaskMOG2, fgMaskMOG2, MORPH_OPEN, Mat::ones(3,3,CV_8U), Point(-1,-1), 1);
             morphologyEx(fgMaskMOG2, fgMaskMOG2, MORPH_CLOSE, Mat::ones(5,5,CV_8U), Point(-1,-1), 2);
@@ -812,7 +823,7 @@ class BGSub {
             // Final clean up for large variance objects
             for (vector<TrackedObjects>::iterator it = tracked_objects.begin(); it != tracked_objects.end(); ) {
             	if (it->CheckAndDelete()) {
-            		tracked_objects.erase(it);
+            		it = tracked_objects.erase(it);
             		cout << "An object removed" << endl;
             	}
             	else {
@@ -1046,9 +1057,9 @@ class BGSub {
 						objects[i].points(rect_points);
 						for(int j = 0; j < 4; j++)
 							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,0,255),2,8);
-						rawBoxes[i].points(rect_points);
-						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,0,0),1,8);
+						//rawBoxes[i].points(rect_points);
+						//for(int j = 0; j < 4; j++)
+						//	line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,0,0),1,8);
 					}
 
 					for (int track = 0; track < tracked_objects.size(); track++) {
@@ -1056,27 +1067,32 @@ class BGSub {
 						TrackedObjects object = tracked_objects[track];
 						if (object.getStatus() == HUMAN)
 							color = Scalar(0,255,0);
-						circle(input_img, object.getPointBody(), 3, color, -1);
+						circle(input_img, object.getPointBody(), 2, color, -1);
 						Point2f rect_points[4];
 						tracked_objects[track].getBodyROI().points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(192,192,0),2,8);
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(192,192,0),1,8);
 						//circle(input_img, object.getPointBody(), 3*object.getSdBody(), Scalar(192,192,0), 2);
 
 						//circle(input_img, object.getPointHead(), 2, Scalar(192,192,192), -1);
 						tracked_objects[track].getHeadROI().points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,192,192),2,8);
-						circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(0,192,192), 2);
-						char buffer[10];
-						sprintf(buffer, "%d, %d", angles[track], tracked_objects[track].getDirection());
-						putText(input_img, buffer , rect_points[1]+Point2f(-10,-10), FONT_HERSHEY_PLAIN, 1, Scalar(255,0,255), 2);
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,255,255),1,8);
+						//circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(255,0,0), 1);
+						if (object.getStatus() == HUMAN) {
+						int dir = object.getDirection();
+							float angle = (dir - object.getHeadROI().angle)*CV_PI/180.;
+							arrowedLine(input_img, object.getPointHead(), object.getPointHead() + 50.*Point2f(sin(angle), cos(angle)), Scalar(255,255,255), 1);
+							char buffer[10];
+							sprintf(buffer, "%d, %d", angles[track], tracked_objects[track].getDirection());
+							putText(input_img, buffer , tracked_objects[track].getBodyROI().center+50.*Point2f(-sin(object.getHeadROI().angle*CV_PI/180.),cos(object.getHeadROI().angle*CV_PI/180.)), FONT_HERSHEY_PLAIN, 1, Scalar(255,0,255), 2);
+						}
 					}
 
-					imshow("FG Mask MOG 2", fgMaskMOG2);
+					//imshow("FG Mask MOG 2", fgMaskMOG2);
 					imshow("Detection", input_img);
 				}
-				outputVideo << input_img;
+				//outputVideo << input_img;
 				//waitKey(1);
 				//std::cout << end-begin << std::endl;
 			}
@@ -1109,7 +1125,7 @@ class BGSub {
                         // update bounding box
                         rect_i = minAreaRect(contour_i);
                         r_i = max(rect_i.size.width, rect_i.size.height) /2.;
-                        inputContours.erase(it_j);
+                        it_j = inputContours.erase(it_j);
                     }
                     else {
                         ++it_j;
@@ -1162,6 +1178,8 @@ void ProcessEntity(struct dirent* entity, vector<string>& file_list);
 int main (int argc, char **argv) {
     string path_dir;
     bool toDraw;
+    bool loadVideo = false;
+    string video_path;
     if( argc == 3 ) {
     	path_dir = argv[1];
     	if (atoi(argv[2]) == 0)
@@ -1177,18 +1195,48 @@ int main (int argc, char **argv) {
 	        toDraw = true;
     }
     else {
-        cerr << "ERROR, wrong arguments." << endl;
-        cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
+    	// Video & draw
+    	loadVideo = true;
+    	video_path = "/home/veerachart/Videos/Test_lab.mp4";
+    	toDraw = true;
+
+        //cerr << "ERROR, wrong arguments." << endl;
+        //cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
     }
     BGSub BG_subtractor = BGSub(toDraw);
     //cout << fixed;
 
     vector<string> file_list;
-    ProcessDirectory(path_dir, file_list);
-    sort(file_list.begin(), file_list.end());
+    if (!loadVideo) {
+		ProcessDirectory(path_dir, file_list);
+		sort(file_list.begin(), file_list.end());
+    }
     Mat frame;
     int idx = 0;
     
+    if (loadVideo) {
+    	VideoCapture cap;
+    	cap.set(CV_CAP_PROP_FOURCC, CV_FOURCC('H','E','V','C'));
+    	cap.open(video_path);
+    	if (cap.isOpened()) {
+    		while (cap.read(frame)) {
+    			int64 start = getTickCount();
+				BG_subtractor.processImage(frame);
+				int64 time = getTickCount() - start;
+				cout << double(time)/getTickFrequency() << endl;
+
+				if (toDraw) {
+					char c = waitKey(1);
+					if (c == 27)
+						break;
+				}
+    		}
+    	}
+    	else {
+    		cerr << "Could not open the video file" << endl;
+    	}
+    }
+    else {
     for(;;)
     {
     	if (idx >= file_list.size())
@@ -1209,6 +1257,7 @@ int main (int argc, char **argv) {
                 break;
         }
         idx++;
+    }
     }
     cout << "Finished" << endl;
     return 0;
