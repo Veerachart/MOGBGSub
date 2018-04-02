@@ -44,7 +44,7 @@ enum objectStatus {
 
 class TrackedObjects {
 public:
-	TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection=RotatedRect());
+	TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection, Point2f imgCenter);
 	Point2f PredictObject();
 	Point2f UpdateObject(RotatedRect objDetection, bool isHumanDetected);			// Return predicted position of the head area
 	//Point2f PredictHead(Mat &obj_vel);
@@ -98,7 +98,7 @@ private:
 	Point2f img_center;
 };
 
-TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection) {
+TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, bool isHeadDetected, RotatedRect headDetection, Point2f imgCenter) {
 	objectKF = KalmanFilter(4, 2, 0);
 	//headKF = KalmanFilter(3, 3, 3);
 	headKF = KalmanFilter(4, 2, 0);
@@ -130,8 +130,9 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 	else
 		countHuman = 0;
 	if (isHeadDetected) {
-		heightRatio = norm(headDetection.center - objDetection.center)/ objDetection.size.height;
-		deltaAngle = headDetection.angle - objDetection.angle;
+	    Point2f bodyToHead = headDetection.center - objDetection.center;
+		heightRatio = norm(bodyToHead)/ objDetection.size.height;
+		deltaAngle = atan2(bodyToHead.x, -bodyToHead.y) - objDetection.angle;
 		headRatio = headDetection.size.width/objDetection.size.width;
 		headKF.statePost = (Mat_<float>(4,1) << headDetection.center.x, headDetection.center.y, 0, 0);
 		headWidth = headDetection.size.width;
@@ -156,8 +157,7 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 
 	headDirection = -1;			// Init
 
-	//img_center = Point2f(384.,384.);
-	img_center = Point2f(400.,300.);
+	img_center = imgCenter;
 }
 
 Point2f TrackedObjects::PredictObject() {
@@ -512,7 +512,7 @@ class BGSub {
 
             save_video = _toSave;
             if (save_video) {
-				string videoName = "omni1A_test1_bgslib_improved.avi";
+				string videoName = "omni1A_test1_newheadest.avi";
 				outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 600), true);
 				//outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
 				if (!outputVideo.isOpened()) {
@@ -752,13 +752,13 @@ class BGSub {
 							else {
 								// Not within range for the existing object, create a new one
 								cout << "Added new object, starting as human." << endl;
-								tracked_objects.push_back(TrackedObjects(humans[hum], true, false));
+								tracked_objects.push_back(TrackedObjects(humans[hum], true, false, RotatedRect(), img_center));
 								usedTrack.push_back(true);				// Needed?
 							}
 						}
 						else {
 							cout << "Added new object, starting as human." << endl;
-							tracked_objects.push_back(TrackedObjects(humans[hum], true, false));
+							tracked_objects.push_back(TrackedObjects(humans[hum], true, false, RotatedRect(), img_center));
 							usedTrack.push_back(true);				// Needed?
 						}
                 	}
@@ -813,14 +813,14 @@ class BGSub {
 								else {
 									// Not within range for the existing object, create a new one
 									cout << "Added new object, not containing human." << endl;
-									tracked_objects.push_back(TrackedObjects(objects[obj], false, false));
+									tracked_objects.push_back(TrackedObjects(objects[obj], false, false, RotatedRect(), img_center));
 									usedTrack.push_back(true);		// Needed?
 								}
 							}
                 			else {
 								// New object
 								cout << "Added new object, not containing human." << endl;
-								tracked_objects.push_back(TrackedObjects(objects[obj], false, false));
+								tracked_objects.push_back(TrackedObjects(objects[obj], false, false, RotatedRect(), img_center));
 								usedTrack.push_back(true);			// Needed?
 							}
                 		}
