@@ -72,6 +72,7 @@ public:
 	int getDirection();
 	void updateDirection(int estimation, int movingDirection);
 	int getCount();
+	string getStringForSave();
 
 private:
 	KalmanFilter objectKF;
@@ -94,6 +95,9 @@ private:
 
 	// For tracking of head direction
 	int headDirection;
+	// For logging head direction (directly from estimation) and direction of movement
+	int currentEstimation;
+	int currentMovingDirection;
 
 	Point2f img_center;
 };
@@ -132,7 +136,7 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 	if (isHeadDetected) {
 	    Point2f bodyToHead = headDetection.center - objDetection.center;
 		heightRatio = norm(bodyToHead)/ objDetection.size.height;
-		deltaAngle = atan2(bodyToHead.x, -bodyToHead.y) - objDetection.angle;
+		deltaAngle = atan2(bodyToHead.x, -bodyToHead.y)*180./CV_PI - objDetection.angle;
 		headRatio = headDetection.size.width/objDetection.size.width;
 		headKF.statePost = (Mat_<float>(4,1) << headDetection.center.x, headDetection.center.y, 0, 0);
 		headWidth = headDetection.size.width;
@@ -156,6 +160,8 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 	status = OBJ;
 
 	headDirection = -1;			// Init
+	currentEstimation = -1;
+	currentMovingDirection = -1;
 
 	img_center = imgCenter;
 }
@@ -262,8 +268,9 @@ Point2f TrackedObjects::UpdateHead(RotatedRect headDetection) {
 	headROI = RotatedRect(Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0)),
 						  Size2f(headWidth, headWidth),
 						  atan2(corrected_state.at<float>(0,0) - img_center.x, img_center.y - corrected_state.at<float>(1,0)) *180./CV_PI);
-	heightRatio = norm(headROI.center - objectROI.center) / objectROI.size.height;
-	deltaAngle = headROI.angle - objectROI.angle;
+	Point2f bodyToHead = headROI.center - objectROI.center;
+	heightRatio = norm(bodyToHead) / objectROI.size.height;
+	deltaAngle = atan2(bodyToHead.x, -bodyToHead.y)*180./CV_PI - objectROI.angle;
 	headRatio = headROI.size.width/objectROI.size.width;
 	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
 }
@@ -338,6 +345,8 @@ int TrackedObjects::getCount() {
 }
 
 void TrackedObjects::updateDirection(int estimation, int movingDirection) {
+	currentEstimation = estimation;
+	currentMovingDirection = movingDirection;
 	if (headDirection < 0) {
 		headDirection = estimation;
 		return;
@@ -385,6 +394,16 @@ void TrackedObjects::updateDirection(int estimation, int movingDirection) {
 			}
 		}
 	}
+}
+
+string TrackedObjects::getStringForSave() {
+	ostringstream ss;
+	ss << countHuman << ",";
+	ss << objectROI.center.x << "," << objectROI.center.y << "," << objectROI.size.width << "," << objectROI.size.height << "," << objectROI.angle << ",";
+	ss << headROI.center.x << "," << headROI.center.y << "," << headROI.size.width << "," << headROI.size.height << "," << headROI.angle << ",";
+	ss << heightRatio << "," << headRatio << "," << deltaAngle << ",";
+	ss << currentEstimation << "," << currentMovingDirection << "," << headDirection;
+	return ss.str();
 }
 /////////////////////////////////
 
@@ -449,8 +468,11 @@ class BGSub {
     
     fern_based_classifier * classifier;
 
+    ofstream &f;
+    long unsigned int count_img;
+
     public:
-        BGSub(bool _toDraw, bool _toSave = false){
+        BGSub(bool _toDraw, ofstream &_file, bool _toSave = false) : f(_file){
             //ROS_INFO("Tracker created.");
             area_threshold = 30;
             
@@ -538,6 +560,23 @@ class BGSub {
             hog_head.load("/home/veerachart/HOG_Classifiers/head_fastHOG.yaml");
             hog_direction = FisheyeHOGDescriptor(Size(hog_size,hog_size), Size(hog_size/2,hog_size/2), Size(hog_size/4,hog_size/4), Size(hog_size/4,hog_size/4), 9);
             hog_original = HOGDescriptor(Size(hog_size,hog_size), Size(hog_size/2,hog_size/2), Size(hog_size/4,hog_size/4), Size(hog_size/4,hog_size/4), 9);
+
+            // **************************** //
+            // REMARKS FOR RESULT RECORDING //
+            // **************************** //
+            // Frame#, TrackedObj#, TrackedHum#, DetectedObj#, DetectedHum#, DetectedHead#, // (cont.)
+            //       , TrackedObjs, TrackedHums, DetectedObjs, DetectedHums, DetectedHeads, processTime\n
+            //
+            // Each TrackedObj/TrackedHum contains
+            // countHuman, x, y, w, h, angle, x, y, w, h, angle, heightRatio, headRatio, deltaAngle
+            //            |------ body -----||------ head -----| |----- head-body relationship ----|
+            // Each Detected* contains
+            // x, y, w, h, angle
+            //
+            // READING
+            // Read line & the first 6 numbers to know TrackedObj#, TrackedHum#, DetectedObj#, DetectedHum#, DetectedHead#
+            // Then use them to indicate how many data need to be read.
+            count_img = 0;
         }
 
         ~BGSub() {
@@ -545,6 +584,7 @@ class BGSub {
         }
             
         bool processImage (Mat &input_img) {
+        	int64 start = getTickCount();
             if (img_center == Point2f() )
                 img_center = Point2f(input_img.cols/2, input_img.rows/2);
             Mat original_img;
@@ -709,7 +749,7 @@ class BGSub {
 
 							if (best_dist < 3*tracked_humans[best_track].getSdBody()) {
 								// Update
-								cout << "Update human with human:" << humans[hum].center << "," << humans[hum].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
+								//cout << "Update human with human:" << humans[hum].center << "," << humans[hum].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
 								tracked_humans[best_track].UpdateObject(humans[hum], true);
 								usedHumanTrack[best_track] = true;
 								continue;
@@ -734,7 +774,7 @@ class BGSub {
 
 							if (best_dist < 3*tracked_objects[best_track].getSdBody()) {
 								// Update
-								cout << "Update object with human:" << humans[hum].center << "," << humans[hum].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
+								//cout << "Update object with human:" << humans[hum].center << "," << humans[hum].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
 								tracked_objects[best_track].UpdateObject(humans[hum], true);
 								if(tracked_objects[best_track].getStatus() == HUMAN) {
 									// Converted to human after update
@@ -782,7 +822,7 @@ class BGSub {
 
 								if (best_dist < 3*tracked_humans[best_track].getSdBody()) {
 									// Update
-									cout << "Update human with object:" << objects[obj].center << "," << objects[obj].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
+									//cout << "Update human with object:" << objects[obj].center << "," << objects[obj].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
 									tracked_humans[best_track].UpdateObject(objects[obj], false);
 									usedHumanTrack[best_track] = true;
 									continue;
@@ -806,7 +846,7 @@ class BGSub {
 
 								if (best_dist < 3*tracked_objects[best_track].getSdBody()) {
 									// Update
-									cout << "Update object with object:" << objects[obj].center << "," << objects[obj].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
+									//cout << "Update object with object:" << objects[obj].center << "," << objects[obj].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
 									tracked_objects[best_track].UpdateObject(objects[obj], false);
 									usedTrack[best_track] = true;
 								}
@@ -867,7 +907,7 @@ class BGSub {
 							}
 							if (best_dist < 3*tracked_humans[best_track].getSdHead()) {
 								// Update
-								cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
+								//cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
 								tracked_humans[best_track].UpdateHead(heads[head]);
 								humanHasHead[best_track] = true;
 								continue;
@@ -892,7 +932,7 @@ class BGSub {
 
 							if (best_dist < 3*tracked_objects[best_track].getSdHead()) {
 								// Update
-								cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
+								//cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
 								tracked_objects[best_track].UpdateHead(heads[head]);
 								objectHasHead[best_track] = true;
 								continue;
@@ -931,10 +971,10 @@ class BGSub {
             vector<float> descriptor;
             int output_class, output_angle;
             vector<int> classes, angles;
-            cout << "Current objects:" << endl;
+            //cout << "Current objects:" << endl;
             // Final clean up for large variance objects
             for (vector<TrackedObjects>::iterator it = tracked_objects.begin(); it != tracked_objects.end(); ) {
-            	cout << "\t" << it->getBodyROI().center << "," << it->getBodyROI().size << endl;
+            	//cout << "\t" << it->getBodyROI().center << "," << it->getBodyROI().size << endl;
             	if (it->CheckAndDelete()) {
 					it = tracked_objects.erase(it);
 					cout << "An object removed" << endl;
@@ -942,9 +982,9 @@ class BGSub {
             	else
             		++it;
             }
-            cout << "Current humans:" << endl;
+            //cout << "Current humans:" << endl;
             for (vector<TrackedObjects>::iterator it = tracked_humans.begin(); it != tracked_humans.end(); ) {
-            	cout << "\t" << it->getBodyROI().center << "," << it->getBodyROI().size << endl;
+            	//cout << "\t" << it->getBodyROI().center << "," << it->getBodyROI().size << endl;
             	if (it->CheckAndDelete()) {
             		it = tracked_humans.erase(it);
             		cout << "A human removed" << endl;
@@ -1006,6 +1046,7 @@ class BGSub {
             		++it;
             	}
             }
+            int64 total_time = getTickCount() - start;
 
                 /*for(int i = 0; i < contours_foreground.size(); i++){
                     double area = contourArea(contours_foreground[i]);
@@ -1159,6 +1200,31 @@ class BGSub {
                         // Supposed to be blimp. Draw for debug
                         drawContours(cv_ptr->image, contours_foreground, i, Scalar(255,0,0), 2, CV_AA);        // Draw in blue
                     }*/
+
+            if (true) {			// TODO If save
+				f << count_img << ",";
+				f << tracked_objects.size() << "," << tracked_humans.size() << "," << objects.size() << "," << humans.size() << "," << heads.size() << ",";
+				for (int a = 0; a < tracked_objects.size(); a++) {
+					f << tracked_objects[a].getStringForSave() << ",";
+				}
+				for (int a = 0; a < tracked_humans.size(); a++) {
+					f << tracked_humans[a].getStringForSave() << ",";
+				}
+				for (int a = 0; a < objects.size(); a++) {
+					RotatedRect temp = objects[a];
+					f << temp.center.x << "," << temp.center.y << "," << temp.size.width << "," << temp.size.height << "," << temp.angle << ",";
+				}
+				for (int a = 0; a < humans.size(); a++) {
+					RotatedRect temp = humans[a];
+					f << temp.center.x << "," << temp.center.y << "," << temp.size.width << "," << temp.size.height << "," << temp.angle << ",";
+				}
+				for (int a = 0; a < heads.size(); a++) {
+					RotatedRect temp = heads[a];
+					f << temp.center.x << "," << temp.center.y << "," << temp.size.width << "," << temp.size.height << "," << temp.angle << ",";
+				}
+				f << double(total_time)/getTickFrequency() * 1000. << endl;			// millisecond
+            }
+
 				if (toDraw) {
 					//for(int i = 0; i < contours_foreground.size(); i++){
 					//	drawContours(input_img, contours_foreground, i, Scalar(0,255,0), 1, CV_AA);
@@ -1236,6 +1302,7 @@ class BGSub {
 					outputVideo << input_img;
 				//waitKey(1);
 				//std::cout << end-begin << std::endl;
+				count_img++;
 				return (tracked_humans.size() > 0 || tracked_objects.size() > 0);
 			}
         
@@ -1322,7 +1389,7 @@ int main (int argc, char **argv) {
     bool toDraw;
     bool loadVideo = false;
     string video_path;
-    bool continuous = false;
+    bool continuous = true;
     if( argc == 3 ) {
     	path_dir = argv[1];
     	if (atoi(argv[2]) == 0)
@@ -1346,7 +1413,8 @@ int main (int argc, char **argv) {
         //cerr << "ERROR, wrong arguments." << endl;
         //cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
     }
-    BGSub BG_subtractor = BGSub(toDraw, true);
+    ofstream file("output/Results/omni1A_test1_dir.csv");
+    BGSub BG_subtractor = BGSub(toDraw, file, true);
     //cout << fixed;
 
     vector<string> file_list;
@@ -1363,10 +1431,10 @@ int main (int argc, char **argv) {
     	cap.open(video_path);
     	if (cap.isOpened()) {
     		while (cap.read(frame)) {
-    			int64 start = getTickCount();
+    			//int64 start = getTickCount();
 				bool toStop = BG_subtractor.processImage(frame);
-				int64 time = getTickCount() - start;
-				cout << double(time)/getTickFrequency() << endl;
+				//int64 time = getTickCount() - start;
+				//cout << double(time)/getTickFrequency() << endl;
 
 				if (toDraw) {
 					char c = waitKey((!toStop || continuous) * 1);
@@ -1391,10 +1459,10 @@ int main (int argc, char **argv) {
         if( frame.data == NULL )
             break;
             
-        int64 start = getTickCount();
+        //int64 start = getTickCount();
         bool toStop = BG_subtractor.processImage(frame);
-        int64 time = getTickCount() - start;
-        cout << double(time)/getTickFrequency() << endl;
+        //int64 time = getTickCount() - start;
+        //cout << double(time)/getTickFrequency() << endl;
         
         if (toDraw) {
         	char c = waitKey((!toStop || continuous) * 1);
@@ -1406,6 +1474,7 @@ int main (int argc, char **argv) {
         idx++;
     }
     }
+    file.close();
     cout << "Finished" << endl;
     return 0;
 }
