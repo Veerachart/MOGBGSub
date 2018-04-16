@@ -376,7 +376,7 @@ void TrackedObjects::updateDirection(int estimation, int movingDirection) {
 	}
 	else if ( diff >= 315) {		// <= 45 degree change, crossing the line 0,360
 		headDirection = cvRound((headDirection + estimation + 360)/2.);
-		if (headDirection > 360)
+		if (headDirection >= 360)
 			headDirection -= 360;
 	}
 	// More than that, update with the moving direction instead
@@ -386,7 +386,7 @@ void TrackedObjects::updateDirection(int estimation, int movingDirection) {
 			if (abs(movingDirection - headDirection) >= 180) {
 				// crossing 0,360 line
 				headDirection = cvRound((headDirection + movingDirection + 360)/2.);
-				if (headDirection > 360)
+				if (headDirection >= 360)
 					headDirection -= 360;
 			}
 			else {
@@ -788,7 +788,7 @@ class BGSub {
     }
 
     public:
-        BGSub(bool _toDraw, ofstream &_file, bool _toSave = false, bool _useFisheyeHOG = true) : f(_file){
+        BGSub(bool _toDraw, ofstream &_file, bool _toSave = false, bool _useFisheyeHOG = false) : f(_file){
             //ROS_INFO("Tracker created.");
             area_threshold = 30;
             
@@ -850,7 +850,7 @@ class BGSub {
 
             save_video = _toSave;
             if (save_video) {
-				string videoName = "omni1A_test1_FEHOG_revised-wincheck.avi";
+				string videoName = "omni1A_test1_originalHOG_fixedmotiondirection.avi";
 				outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
 				//outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
 				if (!outputVideo.isOpened()) {
@@ -1331,12 +1331,15 @@ class BGSub {
 							walking_dir = -1.;					// Not enough speed, no clue
 						}
 						else {
-							walking_dir = rect.angle + atan2(head_vel.x, head_vel.y)*180./CV_PI;			// Estimated walking direction relative to the radial line (0 degree head direction)
-							if (walking_dir < 0)
-								walking_dir += 360;					// [0, 360) range. Negative means no clue
+							//walking_dir = rect.angle + atan2(head_vel.x, head_vel.y)*180./CV_PI;			// Estimated walking direction relative to the radial line (0 degree head direction)
+							walking_dir = 180. + rect.angle - atan2(head_vel.x, -head_vel.y)*180./CV_PI;
+							while (walking_dir < 0.)
+								walking_dir += 360.;					// [0, 360) range. Negative means no clue
+							while (walking_dir > 360.)
+								walking_dir -= 360.;
 						}
 						//cout << head_vel << " Moving in " << walking_dir << " degree direction" << endl;
-						//cout << rect.center << " " << rect.size << " " << rect.angle << endl;
+						//cout << rect.angle << " " << atan2(head_vel.x, -head_vel.y)*180./CV_PI << endl;
 
 						// Check vertices within frame
 						Point2f vertices[4];
@@ -1627,6 +1630,7 @@ class BGSub {
 						float angle = (dir - human.getHeadROI().angle)*CV_PI/180.;
 						arrowedLine(input_img, human.getPointHead(), human.getPointHead() + 50.*Point2f(sin(angle), cos(angle)), Scalar(255,255,255), 1);
 						char buffer[10];
+						arrowedLine(input_img, human.getPointHead(), human.getPointHead() + 10.*human.getHeadVel(), Scalar(0,0,255), 1);
 						sprintf(buffer, "%d, %d", angles[track], human.getDirection());
 						putText(input_img, buffer , human.getBodyROI().center+50.*Point2f(-sin(human.getHeadROI().angle*CV_PI/180.),cos(human.getHeadROI().angle*CV_PI/180.)), FONT_HERSHEY_PLAIN, 1, Scalar(255,0,255), 2);
 					}
@@ -1766,7 +1770,7 @@ int main (int argc, char **argv) {
         //cerr << "ERROR, wrong arguments." << endl;
         //cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
     }
-    ofstream file("output/Results/omni1A_test1_FEHOG_revised-wincheck.csv");
+    ofstream file("output/Results/omni1A_test1_originalHOG_fixedmotiondirection.csv");
     BGSub BG_subtractor = BGSub(toDraw, file, true);
     //cout << fixed;
 
