@@ -78,13 +78,15 @@ void ProcessDirectory(string directory, vector<string>& file_list) {
 class Evaluator {
 private:
 	ifstream &f_result, &f_gt;
+	ofstream &f_write;
 	size_t trackedObjectsLength, detectedObjectsLength;
 	Point img_center;
 	float detect_ratio;
 	string path_dir;
 	vector<string> file_list;
-	//VideoWriter outputVideo;
+	VideoWriter outputVideo;
 	string save_name;
+	string blank_line;
 
 	void drawRotatedRect(Mat &draw, RotatedRect rect, Scalar color, Point2f shift) {
 		Point2f vertices[4];
@@ -93,18 +95,21 @@ private:
 			line(draw, vertices[v] + shift, vertices[(v+1)%4] + shift, color, 2);
 	}
 public:
-	Evaluator(ifstream &_file_result, ifstream &_file_gt) : f_result(_file_result), f_gt(_file_gt) {
+	Evaluator(ifstream &_file_result, ifstream &_file_gt, ofstream &_file_write) : f_result(_file_result), f_gt(_file_gt), f_write(_file_write) {
 		trackedObjectsLength = 17;
 		detectedObjectsLength = 5;
-		img_center = Point(400,300);
-		detect_ratio = 0.25;
+		img_center = Point(400,330);
+		detect_ratio = 0.5;
 
 		path_dir = "/home/veerachart/Datasets/Dataset_PIROPO/omni_1A/omni1A_test1/";
 		ProcessDirectory(path_dir, file_list);
 		sort(file_list.begin(), file_list.end());
 
-		save_name = "output/omni1A_test1_evaluate25.avi";
-		//outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 1200), true);
+		save_name = "output/omni1A_test1_evaluate_FEHOG50_fixmotiondirection.avi";
+		outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 1320), true);
+		f_write << "frame,xb_gt,yb_gt,wb_gt,hb_gt,xh_gt,yh_gt,wh_gt,hh_gt,direction_gt,"
+						 "xb_result,yb_result,wb_result,hb_result,xh_result,yh_result,wh_result,hh_result,direction_result" << endl;
+		blank_line = "NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN";			// For when the ground truth is not available
 	}
 
 	bool readLineResult(vector<int> &counts, vector<RotatedRect> &bodies, vector<RotatedRect> &heads, vector<RotatedRect> &detectedObjects, vector<RotatedRect> &detectedBodies,
@@ -268,6 +273,7 @@ public:
 				break;
 			}
 			Mat img = imread(path_dir+file_list[idx]);
+			copyMakeBorder(img,img,30,30,0,0,BORDER_REPLICATE,Scalar(0,0,0));
 			Point2f shift_drawbody(0, 0);
 			Point2f shift_drawhead(img.cols, 0);
 			Point2f shift_drawdir(0, img.rows);
@@ -291,7 +297,8 @@ public:
 				}
 				imshow("Comparison", draw);
 				waitKey(1);
-				//outputVideo << draw;
+				f_write << idx << "," << blank_line << endl;
+				outputVideo << draw;
 			}
 			else if (!bodies.size()) {			// No human detected --> all GTs become FN
 				FN_tracked_body += bodies_GT.size();
@@ -301,7 +308,8 @@ public:
 				putText(draw, result_text, result_pos + shift_drawhead, FONT_HERSHEY_PLAIN, 2, Scalar(0,0,255), 2);
 				imshow("Comparison", draw);
 				waitKey(1);
-				//outputVideo << draw;
+				f_write << idx << "," << blank_line << endl;
+				outputVideo << draw;
 			}
 			else {
 				vector<int> used_track;
@@ -343,7 +351,8 @@ public:
 						putText(draw, result_text, result_pos + shift_drawhead, FONT_HERSHEY_PLAIN, 2, Scalar(0,0,255), 2);
 						imshow("Comparison", draw);
 						waitKey(1);
-						//outputVideo << draw;
+						f_write << idx << "," << blank_line << endl;
+						outputVideo << draw;
 						continue;
 					}
 
@@ -370,7 +379,8 @@ public:
 						putText(draw, result_text, result_pos + shift_drawhead, FONT_HERSHEY_PLAIN, 2, Scalar(0,0,255), 2);
 						imshow("Comparison", draw);
 						waitKey(1);
-						//outputVideo << draw;
+						f_write << idx << "," << blank_line << endl;
+						outputVideo << draw;
 						continue;
 					}
 					RotatedRect head_gt = heads_GT[gt];
@@ -404,10 +414,10 @@ public:
 					int dir_gt = directions[gt];
 					int dir_result = directionsVec[best_track*3 + 2];		// The third value for tracked direction
 
-					int angle_result = round(dir_result - rect_head.angle);
-					arrowedLine(draw, rect_head.center + shift_drawdir, rect_head.center + shift_drawdir + 50.*Point2f(sin(angle_result*CV_PI/180.), cos(angle_result*CV_PI/180.)), Scalar(0,0,255), 2);
-					int angle_gt = round(dir_gt - head_gt.angle);
-					arrowedLine(draw, head_gt.center + shift_drawdir, head_gt.center + shift_drawdir + 50.*Point2f(sin(angle_gt*CV_PI/180.), cos(angle_gt*CV_PI/180.)), Scalar(0,255,0), 2);
+					int angle_result = round( 180. - dir_result + (rect_head.angle < 0 ? rect_head.angle + 360. : rect_head.angle));
+					arrowedLine(draw, rect_head.center + shift_drawdir, rect_head.center + shift_drawdir + 50.*Point2f(sin(angle_result*CV_PI/180.), -cos(angle_result*CV_PI/180.)), Scalar(0,0,255), 2);
+					int angle_gt = round(180. - dir_gt + (head_gt.angle < 0 ? head_gt.angle + 360. : head_gt.angle));
+					arrowedLine(draw, head_gt.center + shift_drawdir, head_gt.center + shift_drawdir + 50.*Point2f(sin(angle_gt*CV_PI/180.), -cos(angle_gt*CV_PI/180.)), Scalar(0,255,0), 2);
 					//int diff = dir_gt - dir_result;
 					int diff = angle_gt - angle_result;
 					// bring it to [0,360]
@@ -416,7 +426,8 @@ public:
 					// select the smaller angle
 					if (diff > 180)
 						diff = 360 - diff;
-					//cout << diff << endl;
+					if (diff < 0 || diff > 180)
+						cout << "Wrong!: " << diff << ", " << angle_gt << ", " << angle_result << endl;
 					abs_error_dir += diff;
 					errors.push_back(diff);
 					count_maae++;
@@ -424,7 +435,12 @@ public:
 					putText(draw, result_text, result_pos + shift_drawdir, FONT_HERSHEY_PLAIN, 2, Scalar(255,255,255), 2);
 					imshow("Comparison", draw);
 					waitKey(1);
-					//outputVideo << draw;
+					outputVideo << draw;
+					f_write << idx << "," << rect_gt.center.x << "," << rect_gt.center.y << "," << rect_gt.size.width << "," << rect_gt.size.height << ","
+										  << head_gt.center.x << "," << head_gt.center.y << "," << head_gt.size.width << "," << head_gt.size.height << "," << angle_gt;
+					f_write << "," << bodies[best_track].center.x << "," << bodies[best_track].center.y << "," << bodies[best_track].size.width << "," << bodies[best_track].size.height << ","
+								   << rect_head.center.x << "," << rect_head.center.y << "," << rect_head.size.width << "," << rect_head.size.height << "," << angle_result;
+					f_write << endl;
 				}
 
 				for (int track = 0; track < bodies.size(); track++) {
@@ -505,14 +521,16 @@ public:
 			getline(linestream, value,',');
 			rect_temp[j] = atof(value.c_str());
 		}
-		obj = RotatedRect(Point2f(rect_temp[0], rect_temp[1]), Size2f(rect_temp[2], rect_temp[3]), atan2(rect_temp[0]-img_center.x, img_center.y-rect_temp[1])*180./CV_PI);
+		obj = RotatedRect(Point2f(rect_temp[0], rect_temp[1]+30.), Size2f(rect_temp[2], rect_temp[3]), atan2(rect_temp[0]-img_center.x, img_center.y-rect_temp[1]-30.)*180./CV_PI);
 	}
 };
 
 int main (int argc, char ** argv) {
-	ifstream file_result("output/Results/omni1A_test1_dir.csv");
+	//ifstream file_result("output/Results/omni1A_test1_FEHOG_fixbugcompute.csv");
+	ifstream file_result("output/Results/omni1A_test1_FEHOG_fixedmotiondirection.csv");
 	ifstream file_gt("/home/veerachart/Datasets/PIROPO_annotated/omni_1A/omni1A_test1/with_directions/direction_label.csv");
-	Evaluator extractor(file_result, file_gt);
+	ofstream file_xysizedir("output/Results/omni1A_test1_plot_proposed_fixedmotiondirection.csv");
+	Evaluator extractor(file_result, file_gt, file_xysizedir);
 
 	extractor.readFiles();
 
