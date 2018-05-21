@@ -105,15 +105,15 @@ public:
 		ProcessDirectory(path_dir, file_list);
 		sort(file_list.begin(), file_list.end());
 
-		save_name = "output/omni1A_test1_evaluate_FEHOG50_fixmotiondirection.avi";
-		outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 1320), true);
+		save_name = "output/omni1A_test1_evaluate_FEHOG50_presentation.avi";
+		outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 660), true);
 		f_write << "frame,xb_gt,yb_gt,wb_gt,hb_gt,xh_gt,yh_gt,wh_gt,hh_gt,direction_gt,"
 						 "xb_result,yb_result,wb_result,hb_result,xh_result,yh_result,wh_result,hh_result,direction_result" << endl;
 		blank_line = "NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN";			// For when the ground truth is not available
 	}
 
 	bool readLineResult(vector<int> &counts, vector<RotatedRect> &bodies, vector<RotatedRect> &heads, vector<RotatedRect> &detectedObjects, vector<RotatedRect> &detectedBodies,
-			vector<RotatedRect> &detectedHeads, vector<float> &relationsVec, vector<int> &directionsVec, vector<float> &computationTimes) {
+			vector<RotatedRect> &detectedHeads, vector<float> &relationsVec, vector<int> &directionsVec, float *sum_times, int *count_times, float *max_times) {
 		counts.clear();
 		bodies.clear();
 		heads.clear();
@@ -122,7 +122,6 @@ public:
 		detectedHeads.clear();
 		relationsVec.clear();
 		directionsVec.clear();
-		computationTimes.clear();
 
 		string line_s;
 		if (getline(f_result, line_s)) {
@@ -192,7 +191,10 @@ public:
 
 				getline(linestream,value);		// Last one without ','
 				float comp_time = atof(value.c_str());
-				computationTimes.push_back(comp_time);
+				sum_times[numbers[2]] += comp_time;
+				count_times[numbers[2]]++;
+				if (comp_time > max_times[numbers[2]])
+				    max_times[numbers[2]] = comp_time;
 			}
 			else {
 				cout << "\t" << data_len + 1 - 6 -1 << endl;
@@ -247,7 +249,15 @@ public:
 		vector<RotatedRect> bodies, heads, detectedObjects, detectedBodies, detectedHeads;
 		vector<float> relationsVec;
 		vector<int> directionsVec;
-		vector<float> computationTimes;
+		
+		float sum_times[4];
+		int count_times[4];
+		float max_times[4];
+		for (int s = 0; s < 4; s++) {
+		    sum_times[s] = 0.;
+		    count_times[s] = 0;
+		    max_times[s] = 0.;
+	    }
 
 		string temp;
 		getline(f_gt, temp);			// Throw away the header
@@ -267,7 +277,7 @@ public:
 		Point2f result_pos(20,20);
 		char result_text[20];
 
-		while (readLineResult(counts, bodies, heads, detectedObjects, detectedBodies, detectedHeads, relationsVec, directionsVec, computationTimes) &&
+		while (readLineResult(counts, bodies, heads, detectedObjects, detectedBodies, detectedHeads, relationsVec, directionsVec, sum_times, count_times, max_times) &&
 				readLineGT(bodies_GT, heads_GT, directions)) {			// While not the end of the file yet
 			if (idx > file_list.size()) {
 				break;
@@ -276,11 +286,11 @@ public:
 			copyMakeBorder(img,img,30,30,0,0,BORDER_REPLICATE,Scalar(0,0,0));
 			Point2f shift_drawbody(0, 0);
 			Point2f shift_drawhead(img.cols, 0);
-			Point2f shift_drawdir(0, img.rows);
-			Mat draw = Mat::zeros(Size(img.cols*2,img.rows*2), CV_8UC3);
+			//Point2f shift_drawdir(0, img.rows);
+			Mat draw = Mat::zeros(Size(img.cols*2,img.rows), CV_8UC3);
 			img.copyTo(draw.colRange(0, img.cols).rowRange(0, img.rows));
 			img.copyTo(draw.colRange(img.cols, 2*img.cols).rowRange(0, img.rows));
-			img.copyTo(draw.colRange(0, img.cols).rowRange(img.rows, 2*img.rows));
+			//img.copyTo(draw.colRange(0, img.cols).rowRange(img.rows, 2*img.rows));
 			GT_true += bodies_GT.size();
 			// Tracked results first
 			// Body
@@ -415,9 +425,9 @@ public:
 					int dir_result = directionsVec[best_track*3 + 2];		// The third value for tracked direction
 
 					int angle_result = round( 180. - dir_result + (rect_head.angle < 0 ? rect_head.angle + 360. : rect_head.angle));
-					arrowedLine(draw, rect_head.center + shift_drawdir, rect_head.center + shift_drawdir + 50.*Point2f(sin(angle_result*CV_PI/180.), -cos(angle_result*CV_PI/180.)), Scalar(0,0,255), 2);
+					arrowedLine(draw, rect_head.center + shift_drawhead, rect_head.center + shift_drawhead + 50.*Point2f(sin(angle_result*CV_PI/180.), -cos(angle_result*CV_PI/180.)), Scalar(0,0,255), 2);
 					int angle_gt = round(180. - dir_gt + (head_gt.angle < 0 ? head_gt.angle + 360. : head_gt.angle));
-					arrowedLine(draw, head_gt.center + shift_drawdir, head_gt.center + shift_drawdir + 50.*Point2f(sin(angle_gt*CV_PI/180.), -cos(angle_gt*CV_PI/180.)), Scalar(0,255,0), 2);
+					arrowedLine(draw, head_gt.center + shift_drawhead, head_gt.center + shift_drawhead + 50.*Point2f(sin(angle_gt*CV_PI/180.), -cos(angle_gt*CV_PI/180.)), Scalar(0,255,0), 2);
 					//int diff = dir_gt - dir_result;
 					int diff = angle_gt - angle_result;
 					// bring it to [0,360]
@@ -432,7 +442,7 @@ public:
 					errors.push_back(diff);
 					count_maae++;
 					sprintf(result_text, "%d", diff);
-					putText(draw, result_text, result_pos + shift_drawdir, FONT_HERSHEY_PLAIN, 2, Scalar(255,255,255), 2);
+					putText(draw, result_text, result_pos + shift_drawhead + Point2f(0,20), FONT_HERSHEY_PLAIN, 2, Scalar(255,255,255), 2);
 					imshow("Comparison", draw);
 					waitKey(1);
 					outputVideo << draw;
@@ -477,6 +487,13 @@ public:
 		cout << "For checking" << endl;
 		cout << "\tTotal ground truth: " << GT_true << endl;
 		cout << "\tUsed for calculating MAAE: " << count_maae << endl;
+		cout << endl;
+		
+		cout << "Computation times:" << endl;
+		for (int i = 0; i < 4; i++) {
+		    cout << "\tWith " << i << " objects: " << count_times[i] << " frames, avg " << sum_times[i]/float(count_times[i]) << " ms." << endl;
+		    cout << "\t\tmax " << max_times[i] << " ms." << endl;
+	    }
 	}
 
 	void readTrackedObjects(stringstream &linestream, int &countHuman, RotatedRect &body, RotatedRect &head, float *relations, int *directions) {
@@ -529,7 +546,7 @@ int main (int argc, char ** argv) {
 	//ifstream file_result("output/Results/omni1A_test1_FEHOG_fixbugcompute.csv");
 	ifstream file_result("output/Results/omni1A_test1_FEHOG_fixedmotiondirection.csv");
 	ifstream file_gt("/home/veerachart/Datasets/PIROPO_annotated/omni_1A/omni1A_test1/with_directions/direction_label.csv");
-	ofstream file_xysizedir("output/Results/omni1A_test1_plot_proposed_fixedmotiondirection.csv");
+	ofstream file_xysizedir("output/Results/run_avgtime.csv");
 	Evaluator extractor(file_result, file_gt, file_xysizedir);
 
 	extractor.readFiles();
