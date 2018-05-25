@@ -74,6 +74,8 @@ public:
 	int getCount();
 	string getStringForSave();
 
+	Point2f updateHeadfromBody();
+
 private:
 	KalmanFilter objectKF;
 	KalmanFilter headKF;
@@ -230,6 +232,21 @@ Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetec
 							Size2f(bodyWidth, 2*bodyWidth),
 							atan2(corrected_state.at<float>(0,0) - img_center.x, img_center.y - corrected_state.at<float>(1,0)) *180./CV_PI);
 
+	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
+}
+
+/*Point2f TrackedObjects::PredictHead(Mat &obj_vel) {
+	Mat prediction = headKF.predict(obj_vel);
+	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
+	headROI = RotatedRect(Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0)),
+						  Size2f(prediction.at<float>(2,0), prediction.at<float>(2,0)),
+						  atan2(prediction.at<float>(0,0) - img_center.x, img_center.y - prediction.at<float>(1,0)) *180./CV_PI);
+	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
+}*/
+
+Point2f TrackedObjects::updateHeadfromBody() {
+	if (countNonZero(headKF.statePre) == 0)				// Just created, without any prediction performed
+		return Point2f();
 	// After updating the object, use it as weak measurement of head
 	float theta_r = (objectROI.angle + deltaAngle)*CV_PI/180.;
 	Point2f headCenter = objectROI.center + heightRatio*objectROI.size.height*Point2f(sin(theta_r), -cos(theta_r));
@@ -247,17 +264,9 @@ Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetec
 	//Mat obj_vel = corrected_state.rowRange(3,6);
 	sdBody = sqrt(min(objectKF.errorCovPost.at<float>(0,0), objectKF.errorCovPost.at<float>(1,1)));
 	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
-	return Point2f(corrected_state.at<float>(0,0), corrected_state.at<float>(1,0));
-}
 
-/*Point2f TrackedObjects::PredictHead(Mat &obj_vel) {
-	Mat prediction = headKF.predict(obj_vel);
-	sdHead = sqrt(min(headKF.errorCovPost.at<float>(0,0), headKF.errorCovPost.at<float>(1,1)));
-	headROI = RotatedRect(Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0)),
-						  Size2f(prediction.at<float>(2,0), prediction.at<float>(2,0)),
-						  atan2(prediction.at<float>(0,0) - img_center.x, img_center.y - prediction.at<float>(1,0)) *180./CV_PI);
-	return Point2f(prediction.at<float>(0,0), prediction.at<float>(1,0));
-}*/
+	return headROI.center;
+}
 
 Point2f TrackedObjects::UpdateHead(RotatedRect headDetection) {
 	Mat measurement = (Mat_<float>(2,1) << headDetection.center.x, headDetection.center.y);
@@ -689,7 +698,7 @@ class BGSub {
 						hog_body_orig.detect(cropped, foundLocations, foundWeights, 0., Size(4,4), Size(0,0));
 					}
 					else if (flag == 1) {
-						hog_head_orig.detect(cropped, foundLocations, foundWeights, 8.2, Size(4,4), Size(0,0));
+						hog_head_orig.detect(cropped, foundLocations, foundWeights, 8.3, Size(4,4), Size(0,0));
 					}
 
 					Size2f scaledWinSize(scale*win_size.width, scale*win_size.height);
@@ -850,7 +859,7 @@ class BGSub {
 
             save_video = _toSave;
             if (save_video) {
-				string videoName = "omni1A_test1_originalHOG_fixedmotiondirection.avi";
+				string videoName = "output/omni1A_test1_originalHOG_0525reverse.avi";
 				outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
 				//outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
 				if (!outputVideo.isOpened()) {
@@ -1016,7 +1025,7 @@ class BGSub {
             if(contours_foreground.size() > 0){
                 std::sort(contours_foreground.begin(), contours_foreground.end(), compareContourAreas);
                 
-                double threshold = 1.0;
+                double threshold = 1.2;
                 groupContours(contours_foreground, objects, rawBoxes, threshold);
 
 
@@ -1033,11 +1042,13 @@ class BGSub {
                 		area_heads.push_back(RotatedRect(objects[obj].center + 0.25*objects[obj].size.height*Point2f(sin(theta_r), -cos(theta_r)), Size(objects[obj].size.width,objects[obj].size.height/2), objects[obj].angle));
                 		//cout << objects[obj].center << " and " << area_heads.back().center << endl;
                 	}
-                	size_min -= Size(10,20);
-                	size_max += Size(10,20);
-                	float width_head_min = max(12., 0.375*size_min.width - 10.);
+                	size_min -= Size(8,16);
+                	size_max += Size(8,16);
+                	//float width_head_min = max(12., 0.375*size_min.width - 10.);
+                	float width_head_min = max(6., 0.375*size_min.width);
                 	Size size_head_min(width_head_min, width_head_min);
-                	float width_head_max = max(12., 0.375*size_max.width + 10.);
+                	//float width_head_max = max(12., 0.375*size_max.width + 10.);
+                	float width_head_max = max(6., 0.6*size_max.width);
 					Size size_head_max(width_head_max, width_head_max);
 
 					//cout << size_min << " " << size_max << " " << size_head_min << " " << size_head_max << endl;
@@ -1216,8 +1227,15 @@ class BGSub {
 					}
 					imshow("After human detect", draw);*/
 
+                	for (int track = 0; track < tracked_humans.size(); track++) {
+                		tracked_humans[track].updateHeadfromBody();
+                	}
+                	for (int track = 0; track < tracked_objects.size(); track++) {
+                		tracked_objects[track].updateHeadfromBody();
+                	}
+
                 	if (useFisheyeHOG)
-                		hog_head.detectAreaMultiScale(input_img, area_heads, heads, weights, descriptors, size_head_min, size_head_max, 8.2, Size(4,2), Size(0,0), 1.05, 1.0);
+                		hog_head.detectAreaMultiScale(input_img, area_heads, heads, weights, descriptors, size_head_min, size_head_max, 8.3, Size(4,2), Size(0,0), 1.05, 1.0);
                 	else
 						detectOriginalHOG(input_img, area_heads, heads, size_min, size_max, 1.05, 1);
 
@@ -1722,7 +1740,7 @@ class BGSub {
                 h_aligned *= 1.5;
 
                 Size human_size = getHumanSize(norm(center - img_center)) + Size(10,20);
-                outputBoundingBoxes.push_back(RotatedRect(center, Size(max(int(cvRound(w_aligned)),human_size.width), max(int(cvRound(h_aligned)),human_size.height)), theta));
+                outputBoundingBoxes.push_back(RotatedRect(center, Size(max(w_aligned,float(human_size.width)), max(h_aligned,float(human_size.height))), theta));
             }
         }
 
@@ -1770,8 +1788,8 @@ int main (int argc, char **argv) {
         //cerr << "ERROR, wrong arguments." << endl;
         //cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
     }
-    ofstream file("output/Results/omni1A_test1_originalHOG_fixedmotiondirection.csv");
-    BGSub BG_subtractor = BGSub(toDraw, file, true);
+    ofstream file("output/Results/omni1A_test1_originalHOG_0525reverse.csv");
+    BGSub BG_subtractor = BGSub(toDraw, file, true, false);
     //cout << fixed;
 
     vector<string> file_list;
