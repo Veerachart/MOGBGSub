@@ -859,7 +859,7 @@ class BGSub {
 
             save_video = _toSave;
             if (save_video) {
-				string videoName = "output/omni1A_test1_originalHOG_0525reverse.avi";
+				string videoName = "output/omni1A_test1_FEHOG_0601separateROI.avi";
 				outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
 				//outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
 				if (!outputVideo.isOpened()) {
@@ -1028,33 +1028,43 @@ class BGSub {
                 double threshold = 1.2;
                 groupContours(contours_foreground, objects, rawBoxes, threshold);
 
-
                 if (objects.size()) {
                 	Size size_min(1000,1000), size_max(0,0);
+                	Size size_head_min(1000,1000), size_head_max(0,0);
+                	vector<Size> sizes_min, sizes_max;
+                	vector<Size> heads_min, heads_max;
                 	for (int obj = 0; obj < objects.size(); obj++) {
+                	    //cout << objects[obj].center << " " << objects[obj].size << " " << objects[obj].angle << "\t";
                 		Size temp = getHumanSize(norm(objects[obj].center - img_center));
-                		if (temp.width < size_min.width)
-                			size_min = temp;
-                		if (temp.width > size_max.width)
-                			size_max = temp;
+                		Size temp_min = temp - Size(8,16);
+                		Size temp_max = temp + Size(8,16);
+                		sizes_min.push_back(temp_min);
+                		sizes_max.push_back(temp_max);
+                		if (temp_min.width < size_min.width)
+                			size_min = temp_min;
+                		if (temp_max.width > size_max.width)
+                			size_max = temp_max;
+                        float head_width_min = max(6., 0.375*temp_min.width);
+                        float head_width_max = max(6., 0.6*temp_max.width);
+                        Size temp_head_min(head_width_min, head_width_min);
+                        Size temp_head_max(head_width_max, head_width_max);
+                        heads_min.push_back(temp_head_min);
+                        heads_max.push_back(temp_head_max);
+                        if (temp_head_min.width < size_head_min.width)
+                            size_head_min = temp_head_min;
+                        if (temp_head_max.width > size_head_max.width)
+                            size_head_max = temp_head_max;
 
                 		float theta_r = objects[obj].angle*CV_PI/180.;
                 		area_heads.push_back(RotatedRect(objects[obj].center + 0.25*objects[obj].size.height*Point2f(sin(theta_r), -cos(theta_r)), Size(objects[obj].size.width,objects[obj].size.height/2), objects[obj].angle));
                 		//cout << objects[obj].center << " and " << area_heads.back().center << endl;
                 	}
-                	size_min -= Size(8,16);
-                	size_max += Size(8,16);
-                	//float width_head_min = max(12., 0.375*size_min.width - 10.);
-                	float width_head_min = max(6., 0.375*size_min.width);
-                	Size size_head_min(width_head_min, width_head_min);
-                	//float width_head_max = max(12., 0.375*size_max.width + 10.);
-                	float width_head_max = max(6., 0.6*size_max.width);
-					Size size_head_max(width_head_max, width_head_max);
 
 					//cout << size_min << " " << size_max << " " << size_head_min << " " << size_head_max << endl;
 
-                	if (useFisheyeHOG)
-                		hog_body.detectAreaMultiScale(input_img, objects, humans, weights, descriptors, size_min, size_max, 0., Size(4,2), Size(0,0), 1.05, 1.0);
+					if (useFisheyeHOG)
+                		//hog_body.detectAreaMultiScale(input_img, objects, humans, weights, descriptors, size_min, size_max, 0., Size(4,2), Size(0,0), 1.05, 1.0);
+					    hog_body.detectAreaMultiScale2(input_img, objects, humans, weights, descriptors, sizes_min, sizes_max, size_min, size_max, 0., Size(4,2), Size(0,0), 1.05, 1.0);
                 	else {
                 		detectOriginalHOG(input_img, objects, humans, size_min, size_max, 1.05, 0);
                 	}
@@ -1235,9 +1245,11 @@ class BGSub {
                 	}
 
                 	if (useFisheyeHOG)
-                		hog_head.detectAreaMultiScale(input_img, area_heads, heads, weights, descriptors, size_head_min, size_head_max, 8.3, Size(4,2), Size(0,0), 1.05, 1.0);
+                		//hog_head.detectAreaMultiScale(input_img, area_heads, heads, weights, descriptors, size_head_min, size_head_max, 8.3, Size(4,2), Size(0,0), 1.05, 1.0);
+                	    hog_head.detectAreaMultiScale2(input_img, area_heads, heads, weights, descriptors, heads_min, heads_max, size_head_min, size_head_max, 8.3, Size(4,2), Size(0,0), 1.05, 1.0);
                 	else
 						detectOriginalHOG(input_img, area_heads, heads, size_min, size_max, 1.05, 1);
+
 
                 	vector<bool> humanHasHead(tracked_humans.size(), false);
                 	vector<bool> objectHasHead(tracked_objects.size(), false);
@@ -1788,8 +1800,8 @@ int main (int argc, char **argv) {
         //cerr << "ERROR, wrong arguments." << endl;
         //cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
     }
-    ofstream file("output/Results/omni1A_test1_originalHOG_0525reverse.csv");
-    BGSub BG_subtractor = BGSub(toDraw, file, true, false);
+    ofstream file("output/Results/omni1A_test1_FEHOG_0601separateROI.csv");
+    BGSub BG_subtractor = BGSub(toDraw, file, true, true);
     //cout << fixed;
 
     vector<string> file_list;
