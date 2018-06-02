@@ -220,7 +220,10 @@ Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetec
 		}
 		setIdentity(objectKF.measurementNoiseCov, Scalar::all(objDetection.size.width*objDetection.size.width/16.));
 		measurement = (Mat_<float>(2,1) << objDetection.center.x, objDetection.center.y);
-		bodyWidth = objDetection.size.width;
+		if (countHuman == 1)        // the first time detected as human, should not keep previous size
+		    bodyWidth = objDetection.size.width;
+		else                        // average with the old one to smooth the width
+		    bodyWidth = 0.5*(bodyWidth + objDetection.size.width);
 	}
 	else {
 		setIdentity(objectKF.measurementNoiseCov, Scalar::all(objDetection.size.width*objDetection.size.width/16.));		// Larger variance for object
@@ -252,6 +255,11 @@ Point2f TrackedObjects::updateHeadfromBody() {
 	Point2f headCenter = objectROI.center + heightRatio*objectROI.size.height*Point2f(sin(theta_r), -cos(theta_r));
 	Mat measurement_frombody = (Mat_<float>(2,1) << headCenter.x, headCenter.y);
 	headWidth = headRatio*objectROI.size.width;
+	if (headWidth < 6.) {
+	    // Too small and should be limited to prevent problems
+	    headWidth = 6.;
+	    headRatio = headWidth/objectROI.size.width;
+	}
 	setIdentity(headKF.measurementNoiseCov, Scalar::all(objectROI.size.width*objectROI.size.width/16.));
 	Mat corrected_head = headKF.correct(measurement_frombody);
 	headROI = RotatedRect(Point2f(corrected_head.at<float>(0,0), corrected_head.at<float>(1,0)),
@@ -859,7 +867,7 @@ class BGSub {
 
             save_video = _toSave;
             if (save_video) {
-				string videoName = "output/omni1A_test1_FEHOG_0601separateROI.avi";
+				string videoName = "output/omni3A_test1_FEHOG_0602fix.avi";
 				outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
 				//outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
 				if (!outputVideo.isOpened()) {
@@ -1036,8 +1044,10 @@ class BGSub {
                 	for (int obj = 0; obj < objects.size(); obj++) {
                 	    //cout << objects[obj].center << " " << objects[obj].size << " " << objects[obj].angle << "\t";
                 		Size temp = getHumanSize(norm(objects[obj].center - img_center));
-                		Size temp_min = temp - Size(8,16);
-                		Size temp_max = temp + Size(8,16);
+                		//Size temp_min = temp - Size(8,16);
+                		//Size temp_max = temp + Size(8,16);
+                		Size temp_min(cvRound(0.8*temp.width), 2*cvRound(0.8*temp.width));
+                        Size temp_max(cvRound(1.2*temp.width), 2*cvRound(1.2*temp.width));
                 		sizes_min.push_back(temp_min);
                 		sizes_max.push_back(temp_max);
                 		if (temp_min.width < size_min.width)
@@ -1751,7 +1761,10 @@ class BGSub {
                 float h_aligned = h*cos(delta) + w*sin(delta);
                 h_aligned *= 1.5;
 
-                Size human_size = getHumanSize(norm(center - img_center)) + Size(10,20);
+                //Size human_size = getHumanSize(norm(center - img_center)) + Size(10,20);
+                Size human_size = getHumanSize(norm(center - img_center));
+                human_size.width = cvRound(1.5*human_size.width);
+                human_size.height = 2*human_size.width;
                 outputBoundingBoxes.push_back(RotatedRect(center, Size(max(w_aligned,float(human_size.width)), max(h_aligned,float(human_size.height))), theta));
             }
         }
@@ -1800,7 +1813,7 @@ int main (int argc, char **argv) {
         //cerr << "ERROR, wrong arguments." << endl;
         //cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
     }
-    ofstream file("output/Results/omni1A_test1_FEHOG_0601separateROI.csv");
+    ofstream file("output/Results/omni3A_test1_FEHOG_0602fix.csv");
     BGSub BG_subtractor = BGSub(toDraw, file, true, true);
     //cout << fixed;
 
@@ -1843,7 +1856,7 @@ int main (int argc, char **argv) {
     	if (idx >= file_list.size())
     		break;
         frame = imread(path_dir+file_list[idx]);
-		copyMakeBorder(frame,frame,30,30,0,0,BORDER_REPLICATE,Scalar(0,0,0));
+		copyMakeBorder(frame,frame,30,30,0,0,BORDER_CONSTANT,Scalar(0,0,0));
         //int64 start = getTickCount();
         if( frame.data == NULL )
             break;
