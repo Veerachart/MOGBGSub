@@ -95,17 +95,18 @@ private:
 			line(draw, vertices[v] + shift, vertices[(v+1)%4] + shift, color, 2);
 	}
 public:
-	Evaluator(ifstream &_file_result, ifstream &_file_gt, ofstream &_file_write) : f_result(_file_result), f_gt(_file_gt), f_write(_file_write) {
+	Evaluator(ifstream &_file_result, ifstream &_file_gt, ofstream &_file_write, string folderName, string fileName) : f_result(_file_result), f_gt(_file_gt), f_write(_file_write) {
 		trackedObjectsLength = 17;
 		detectedObjectsLength = 5;
 		img_center = Point(400,330);
 		detect_ratio = 0.5;
 
-		path_dir = "/home/veerachart/Datasets/Dataset_PIROPO/omni_1A/omni1A_test1/";
+		path_dir = "/home/veerachart/Datasets/Dataset_PIROPO/" + folderName;
 		ProcessDirectory(path_dir, file_list);
 		sort(file_list.begin(), file_list.end());
 
-		save_name = "output/omni1A_test1_evaluate_FEHOG50_presentation.avi";
+
+		save_name = "output/evaluate_" + fileName + ".avi";
 		outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 660), true);
 		f_write << "frame,xb_gt,yb_gt,wb_gt,hb_gt,xh_gt,yh_gt,wh_gt,hh_gt,direction_gt,"
 						 "xb_result,yb_result,wb_result,hb_result,xh_result,yh_result,wh_result,hh_result,direction_result" << endl;
@@ -284,6 +285,14 @@ public:
 			}
 			Mat img = imread(path_dir+file_list[idx]);
 			copyMakeBorder(img,img,30,30,0,0,BORDER_REPLICATE,Scalar(0,0,0));
+			/*Mat drawHead;
+			img.copyTo(drawHead);
+			for (int i = 0; i < detectedHeads.size(); i++) {
+				drawRotatedRect(drawHead, detectedHeads[i], Scalar(63,63,255), Point2f(0,0));
+			}
+			char figname[30];
+			sprintf(figname, "output/CheckHeads/head%04d.jpg", idx);
+			imwrite(figname, drawHead);*/
 			Point2f shift_drawbody(0, 0);
 			Point2f shift_drawhead(img.cols, 0);
 			//Point2f shift_drawdir(0, img.rows);
@@ -544,10 +553,79 @@ public:
 
 int main (int argc, char ** argv) {
 	//ifstream file_result("output/Results/omni1A_test1_FEHOG_fixbugcompute.csv");
-	ifstream file_result("output/Results/omni1A_test1_FEHOG_fixedmotiondirection.csv");
-	ifstream file_gt("/home/veerachart/Datasets/PIROPO_annotated/omni_1A/omni1A_test1/with_directions/direction_label.csv");
-	ofstream file_xysizedir("output/Results/run_avgtime.csv");
-	Evaluator extractor(file_result, file_gt, file_xysizedir);
+    int camNum, testNum;
+    int month, date;
+    bool useFEHOG;
+    string remarkStr;
+    if (argc < 6 || argc > 7) {
+        cerr << "USAGE: ./build/Evaluator cam_num[1-3] test_num[1-12] month[1-12] date[1-31] FEHOG[f/o] {remark}" << endl;
+        return -1;
+    }
+    int temp = atoi(argv[1]);
+    if (temp > 0 && temp < 4)
+        camNum = temp;
+    else {
+        cerr << "Wrong camera number, the first argument should be 1, 2, or 3." << endl;
+        return -1;
+    }
+    temp = atoi(argv[2]);
+    if (temp > 0 && temp < 13)
+        testNum = temp;
+    else {
+        cerr << "Wrong test number, the second argument should be between 1 and 12, inclusive." << endl;
+        return -1;
+    }
+    temp = atoi(argv[3]);
+    if (temp > 0 && temp < 13)
+        month = temp;
+    else {
+        cerr << "Wrong month, the third argument should be between 1 and 12, inclusive." << endl;
+        return -1;
+    }
+    temp = atoi(argv[4]);
+    if (temp > 0 && temp < 32)
+        date = temp;
+    else {
+        cerr << "Wrong date, the fourth argument should be between 1 and 31, inclusive." << endl;
+        return -1;
+    }
+    ostringstream buffer;
+    buffer << "omni_" << camNum << "A/omni" << camNum <<"A_test" << testNum << "/";
+    if (strlen(argv[5]) == 1) {
+        if (argv[5][0] == 'f') {
+            useFEHOG = true;
+        }
+        else if (argv[5][0] == 'o') {
+            useFEHOG = false;
+        }
+        else {
+            useFEHOG = true;
+            cout << "use \'f\' for FEHOG or \'o\' for original HOG. Now use FEHOG as default." << endl;
+        }
+    }
+    if (argc == 7) {
+        remarkStr = string(argv[6]);
+    }
+    else
+        remarkStr = "regular";
+
+    char mmdd[5];
+    sprintf(mmdd, "%02d%02d", month, date);
+    char fileName[100];
+    sprintf(fileName, "omni%dA_test%d_%s_%s%s", camNum, testNum, (useFEHOG ? "FEHOG" : "originalHOG"), mmdd, remarkStr.c_str());
+    char inFileName[100];
+    sprintf(inFileName, "output/Results/%s.csv", fileName);
+    char outFileName[100];
+    sprintf(outFileName, "output/Results/evaluate_%s.csv", fileName);
+    cout << fileName << endl;
+    cout << inFileName << endl;
+    cout << outFileName << endl;
+    cout << buffer.str() << endl;
+
+	ifstream file_result(inFileName);
+	ifstream file_gt("/home/veerachart/Datasets/PIROPO_annotated/omni_1A/omni1A_test1/with_directions/direction_label_full.csv");
+	ofstream file_xysizedir(outFileName);
+	Evaluator extractor(file_result, file_gt, file_xysizedir, buffer.str(), string(fileName));
 
 	extractor.readFiles();
 
