@@ -16,6 +16,7 @@
 #include <ctype.h>
 #include "ferns.h"
 #include "fern_based_classifier.h"
+#include <time.h>
 
 template <typename T> int sgn(T val) {
     return (T(0) < val) - (val < T(0));
@@ -490,7 +491,7 @@ class BGSub {
     vector<TrackedObjects> tracked_humans;
     int hog_size;
     bool toDraw;
-    
+
     fern_based_classifier * classifier;
 
     ofstream &f;
@@ -805,7 +806,7 @@ class BGSub {
     }
 
     public:
-        BGSub(bool _toDraw, ofstream &_file, bool _toSave = false, bool _useFisheyeHOG = false) : f(_file){
+        BGSub(bool _toDraw, ofstream &_file, char* outFileName, bool _toSave = false, bool _useFisheyeHOG = false) : f(_file){
             //ROS_INFO("Tracker created.");
             area_threshold = 30;
             
@@ -867,7 +868,7 @@ class BGSub {
 
             save_video = _toSave;
             if (save_video) {
-				string videoName = "output/omni3A_test1_FEHOG_0602fix.avi";
+				string videoName = "output/" + string(outFileName) + ".avi";
 				outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
 				//outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
 				if (!outputVideo.isOpened()) {
@@ -1785,12 +1786,66 @@ void ProcessDirectory(string directory, vector<string>& file_list);
 void ProcessEntity(struct dirent* entity, vector<string>& file_list);
 
 int main (int argc, char **argv) {
-    string path_dir;
+    string path_dir = "/home/veerachart/Datasets/Dataset_PIROPO/";
+    string folder;
+    string remarkStr;
+
     bool toDraw;
+    bool toSave;
+    bool useFEHOG;
     bool loadVideo = false;
     string video_path;
     bool continuous = true;
-    if( argc == 3 ) {
+    int camNum, testNum;
+    if(argc < 6 || argc > 7) {
+        cerr << "USAGE: ./build/BGSub cam_num[1-3] test_num[1-12] draw[0/1] save[0/1] FEHOG[f/o] {remark}" << endl;
+        return -1;
+    }
+    if(argc == 6 || argc == 7) {
+        ostringstream buffer;
+        int temp = atoi(argv[1]);
+        if (temp > 0 && temp < 4)
+            camNum = temp;
+        else {
+            cerr << "Wrong camera number, the first argument should be 1, 2, or 3." << endl;
+            return -1;
+        }
+        temp = atoi(argv[2]);
+        if (temp > 0 && temp < 13)
+            testNum = temp;
+        else {
+            cerr << "Wrong test number, the first argument should be between 1 and 12, inclusive." << endl;
+            return -1;
+        }
+        buffer << "omni_" << camNum << "A/omni" << camNum <<"A_test" << testNum << "/";
+        folder = path_dir + buffer.str();
+        if (atoi(argv[3]) == 0)
+            toDraw = false;
+        else
+            toDraw = true;
+        if (atoi(argv[4]) == 0)
+            toSave = false;
+        else
+            toSave = true;
+        if (strlen(argv[5]) == 1) {
+            if (argv[5][0] == 'f') {
+                useFEHOG = true;
+            }
+            else if (argv[5][0] == 'o') {
+                useFEHOG = false;
+            }
+            else {
+                useFEHOG = true;
+                cout << "use \'f\' for FEHOG or \'o\' for original HOG. Now use FEHOG as default." << endl;
+            }
+        }
+        if (argc == 7) {
+            remarkStr = string(argv[6]);
+        }
+        else
+            remarkStr = "regular";
+    }
+    /*if( argc == 3 ) {
     	path_dir = argv[1];
     	if (atoi(argv[2]) == 0)
     	    toDraw = false;
@@ -1812,14 +1867,23 @@ int main (int argc, char **argv) {
 
         //cerr << "ERROR, wrong arguments." << endl;
         //cout << "Usage: ./BGSub [path_dir] draw(0 or 1)" << endl;
-    }
-    ofstream file("output/Results/omni3A_test1_FEHOG_0602fix.csv");
-    BGSub BG_subtractor = BGSub(toDraw, file, true, true);
+    }*/
+    time_t now = time(0);
+    struct tm* timeinfo;
+    timeinfo = localtime(&now);
+    char date[5];
+    strftime(date,5,"%m%d",timeinfo);
+    char outFileName[100];
+    sprintf(outFileName, "omni%dA_test%d_%s_%s%s", camNum, testNum, (useFEHOG ? "FEHOG" : "originalHOG"), date, remarkStr.c_str());
+    char csvFileName[100];
+    sprintf(csvFileName, "output/Results/%s.csv", outFileName);
+    ofstream file(csvFileName);
+    BGSub BG_subtractor = BGSub(toDraw, file, outFileName, toSave, useFEHOG);
     //cout << fixed;
 
     vector<string> file_list;
     if (!loadVideo) {
-		ProcessDirectory(path_dir, file_list);
+		ProcessDirectory(folder, file_list);
 		sort(file_list.begin(), file_list.end());
     }
     Mat frame;
@@ -1855,7 +1919,7 @@ int main (int argc, char **argv) {
     	//cout << idx << endl;
     	if (idx >= file_list.size())
     		break;
-        frame = imread(path_dir+file_list[idx]);
+        frame = imread(folder+file_list[idx]);
 		copyMakeBorder(frame,frame,30,30,0,0,BORDER_CONSTANT,Scalar(0,0,0));
         //int64 start = getTickCount();
         if( frame.data == NULL )
