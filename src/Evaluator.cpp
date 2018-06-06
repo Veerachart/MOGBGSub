@@ -76,7 +76,7 @@ void ProcessDirectory(string directory, vector<string>& file_list) {
 }
 
 class Evaluator {
-private:
+protected:
 	ifstream &f_result, &f_gt;
 	ofstream &f_write;
 	size_t trackedObjectsLength, detectedObjectsLength;
@@ -551,6 +551,122 @@ public:
 	}
 };
 
+class EvaluateNoGT : protected Evaluator {
+public:
+    EvaluateNoGT(ifstream &_file_result, ifstream &_file_gt, ofstream &_file_write, string folderName, string fileName) : Evaluator(_file_result, _file_gt, _file_write, folderName, fileName){
+    }
+    bool readLineGT(vector<Point2f> &headCenters) {
+        headCenters.clear();
+        string line_s;
+        if (getline(f_gt, line_s)) {
+            stringstream linestream(line_s);
+            string value;
+            string temp = linestream.str();
+            int data_len = count(temp.begin(), temp.end(), ',');
+            Point2f head;
+            int x, y;
+            getline(linestream, value, ',');        // fignum
+            while(true) {
+                getline(linestream, value, ',');    // x
+                x = atoi(value.c_str());
+                getline(linestream, value, ',');    // y
+                y = atoi(value.c_str());
+                if (x == 0 && y == 0)               // no data
+                    break;
+                head = Point2f(x + 30.,y);
+                headCenters.push_back(head);
+            }
+            return true;
+        }
+        else {
+            return false;
+        }
+    }
+
+    void readFiles() {
+        // GT side
+        vector<RotatedRect> bodies_GT, heads_GT;
+        vector<int> directions;
+
+        // Result side
+        vector<int> counts;
+        vector<RotatedRect> bodies, heads, detectedObjects, detectedBodies, detectedHeads;
+        vector<float> relationsVec;
+        vector<int> directionsVec;
+        vector<Point2f> headGT;
+
+        float sum_times[4];
+        int count_times[4];
+        float max_times[4];
+        for (int s = 0; s < 4; s++) {
+            sum_times[s] = 0.;
+            count_times[s] = 0;
+            max_times[s] = 0.;
+        }
+
+        int idx = 0;
+
+        vector<int> errors;
+        //for(int r = 0; r < 273-189; r++) {
+        for(int r = 0; r < 189-180; r++) {
+            //readLineGT(headGT);
+            //readLineResult(counts, bodies, heads, detectedObjects, detectedBodies, detectedHeads, relationsVec, directionsVec, sum_times, count_times, max_times);
+            f_write << idx << "," << blank_line << endl;
+            idx++;
+        }
+
+        while (readLineResult(counts, bodies, heads, detectedObjects, detectedBodies, detectedHeads, relationsVec, directionsVec, sum_times, count_times, max_times) &&
+            readLineGT(headGT)) {          // While not the end of the file yet
+            if (idx > file_list.size()) {
+                break;
+            }
+
+            if (!headGT.size()) {            // No GT for head center
+                f_write << idx << "," << blank_line << endl;
+            }
+            else if (!bodies.size()) {       // No body from the result
+                f_write << idx << "," << blank_line << endl;
+            }
+            else {
+                vector<int> used_track;
+                for (int gt = 0; gt < headGT.size(); gt++) {
+                    Point2f centerGT = headGT[gt];
+
+                    int best_track = -1;
+                    float best_dist = 10000;
+
+                    for (int track = 0; track < heads.size(); track++) {
+                        if (find(used_track.begin(), used_track.end(), track) != used_track.end())
+                            continue;               // already used
+                        if (counts[track] < 3)      // Not yet a human
+                            continue;
+                        float dist = norm(heads[track].center - centerGT);
+                        if (dist < best_dist) {
+                            best_track = track;
+                            best_dist = dist;
+                        }
+                    }
+                    if (best_track != -1) {
+                        used_track.push_back(best_track);
+                        RotatedRect rect_head = heads[best_track];
+                        int dir_result = directionsVec[best_track*3 + 2];       // The third value for tracked direction
+                        int angle_result = round( 180. - dir_result + (rect_head.angle < 0 ? rect_head.angle + 360. : rect_head.angle));
+                        f_write << idx << "," << 0 << "," << 0 << "," << 0 << "," << 0 << ","
+                                              << centerGT.x << "," << centerGT.y << "," << 0 << "," << 0 << "," << 0;
+                        f_write << "," << bodies[best_track].center.x << "," << bodies[best_track].center.y << "," << bodies[best_track].size.width << "," << bodies[best_track].size.height << ","
+                                       << rect_head.center.x << "," << rect_head.center.y << "," << rect_head.size.width << "," << rect_head.size.height << "," << angle_result;
+                        f_write << endl;
+                    }
+                    else {
+                        f_write << idx << "," << blank_line << endl;
+                    }
+                }
+            }
+            idx++;
+        }
+    }
+};
+
 int main (int argc, char ** argv) {
 	//ifstream file_result("output/Results/omni1A_test1_FEHOG_fixbugcompute.csv");
     int camNum, testNum;
@@ -622,10 +738,16 @@ int main (int argc, char ** argv) {
     cout << outFileName << endl;
     cout << buffer.str() << endl;
 
+    char gtFileName[100];
+    sprintf(gtFileName, "/home/veerachart/Datasets/Dataset_PIROPO/omni_%dA/Ground_Truth_Annotations/groundTruth_omni%dA_test%d.csv", camNum, camNum, testNum);
+    cout << gtFileName << endl;
+
 	ifstream file_result(inFileName);
 	ifstream file_gt("/home/veerachart/Datasets/PIROPO_annotated/omni_1A/omni1A_test1/with_directions/direction_label_full.csv");
+//ifstream file_gt(gtFileName);
 	ofstream file_xysizedir(outFileName);
 	Evaluator extractor(file_result, file_gt, file_xysizedir, buffer.str(), string(fileName));
+	//EvaluateNoGT extractor(file_result, file_gt, file_xysizedir, buffer.str(), string(fileName));
 
 	extractor.readFiles();
 
