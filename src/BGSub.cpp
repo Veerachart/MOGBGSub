@@ -366,14 +366,27 @@ void TrackedObjects::updateDirection(int estimation, int movingDirection) {
 	currentEstimation = estimation;
 	currentMovingDirection = movingDirection;
 	if (headDirection < 0) {
-		headDirection = estimation;
+	    if (movingDirection >= 0) {
+	        if (estimation >= 0) {
+	            if (abs(movingDirection - estimation) >= 180)
+	                headDirection = cvRound((movingDirection + estimation + 360)/2.);
+	            else
+	                headDirection = cvRound((movingDirection + estimation)/2.);
+	        }
+	        else {
+	            headDirection = movingDirection;
+	        }
+	    }
+	    else {
+	        headDirection = estimation;
+	    }
 		return;
 	}
 
 	if (estimation < 0) {
 		// When the head is out of the frame and direction cannot be estimated
 		// Use only moving direction
-		if (movingDirection > 0) {
+		if (movingDirection >= 0) {
 			// Moving
 			if (abs(movingDirection - headDirection) >= 180) {
 				// crossing 0,360 line
@@ -1814,7 +1827,7 @@ int main (int argc, char **argv) {
         if (temp > 0 && temp < 13)
             testNum = temp;
         else {
-            cerr << "Wrong test number, the first argument should be between 1 and 12, inclusive." << endl;
+            cerr << "Wrong test number, the second argument should be between 1 and 12, inclusive." << endl;
             return -1;
         }
         buffer << "omni_" << camNum << "A/omni" << camNum <<"A_test" << testNum << "/";
