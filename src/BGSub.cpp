@@ -67,6 +67,7 @@ public:
 	Point2f getPointHead();
 	RotatedRect getBodyROI();
 	RotatedRect getHeadROI();
+	Point2f getBodyVel();
 	Point2f getHeadVel();
 	int getStatus();
 	float threshold();
@@ -74,6 +75,8 @@ public:
 	void updateDirection(int estimation, int movingDirection);
 	int getCount();
 	string getStringForSave();
+	bool isTrackedHeadInvalid();
+	bool isNewHeadLegit(RotatedRect head);
 
 	Point2f updateHeadfromBody();
 
@@ -117,7 +120,7 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 													 0,0,1,0,
 													 0,0,0,1);
 	setIdentity(objectKF.measurementMatrix);
-	setIdentity(objectKF.processNoiseCov, Scalar::all(16.0));
+	setIdentity(objectKF.processNoiseCov, Scalar::all(25.0));
 	setIdentity(objectKF.measurementNoiseCov, Scalar::all(sdBody*sdBody));
 	setIdentity(objectKF.errorCovPost, Scalar::all(sdBody*sdBody));
 	objectKF.statePost = (Mat_<float>(4,1) << objDetection.center.x, objDetection.center.y, 0, 0);
@@ -129,7 +132,7 @@ TrackedObjects::TrackedObjects(RotatedRect objDetection, bool isHumanDetected, b
 												   0,0,1,0,
 												   0,0,0,1);
 	setIdentity(headKF.measurementMatrix);
-	setIdentity(headKF.processNoiseCov, Scalar::all(16.0));
+	setIdentity(headKF.processNoiseCov, Scalar::all(25.0));
 	setIdentity(headKF.measurementNoiseCov, Scalar::all(sdHead*sdHead));
 	setIdentity(headKF.errorCovPost, Scalar::all(sdHead*sdHead));
 	if (isHumanDetected)
@@ -249,14 +252,20 @@ Point2f TrackedObjects::UpdateObject(RotatedRect objDetection, bool isHumanDetec
 }*/
 
 Point2f TrackedObjects::updateHeadfromBody() {
-	if (countNonZero(headKF.statePre) == 0)				// Just created, without any prediction performed
-		return Point2f();
 	// After updating the object, use it as weak measurement of head
 	float theta_r = (objectROI.angle + deltaAngle)*CV_PI/180.;
 	Point2f headCenter = objectROI.center + heightRatio*objectROI.size.height*Point2f(sin(theta_r), -cos(theta_r));
-	Mat measurement_frombody = (Mat_<float>(2,1) << headCenter.x, headCenter.y);
 	headWidth = headRatio*objectROI.size.width;
-	if (headWidth < 6.) {
+
+    if (countNonZero(headKF.statePre) == 0) {             // Just created, without any prediction performed
+        headKF.statePre = (Mat_<float>(4,1) << headCenter.x, headCenter.y, 0, 0);
+        headROI = RotatedRect(headCenter, Size(headWidth, headWidth),
+                              atan2(headCenter.x - img_center.x, img_center.y - headCenter.y) *180./CV_PI);
+        return headROI.center;
+    }
+
+    Mat measurement_frombody = (Mat_<float>(2,1) << headCenter.x, headCenter.y);
+    if (headWidth < 6.) {
 	    // Too small and should be limited to prevent problems
 	    headWidth = 6.;
 	    headRatio = headWidth/objectROI.size.width;
@@ -350,6 +359,10 @@ int TrackedObjects::getStatus() {
 	return status;
 }
 
+Point2f TrackedObjects::getBodyVel() {
+    return Point2f(objectKF.statePost.at<float>(2,0), objectKF.statePost.at<float>(3,0));
+}
+
 Point2f TrackedObjects::getHeadVel() {
 	return Point2f(headKF.statePost.at<float>(2,0), headKF.statePost.at<float>(3,0));
 }
@@ -436,6 +449,19 @@ string TrackedObjects::getStringForSave() {
 	ss << currentEstimation << "," << currentMovingDirection << "," << headDirection;
 	return ss.str();
 }
+
+bool TrackedObjects::isTrackedHeadInvalid() {
+    return (heightRatio > 0.5 || heightRatio < 0.1 || headRatio > 0.8 || headRatio < 0.1 || fabs(deltaAngle) > 26.6);       // atan(0.5)
+}
+
+bool TrackedObjects::isNewHeadLegit(RotatedRect head) {
+    float heightR = norm(head.center - objectROI.center)/objectROI.size.height;
+    float headR = head.size.width/bodyWidth;
+    float deltaAng = head.angle - objectROI.angle;
+    while (deltaAng > 180.)
+        deltaAng -= 360.;
+    return (heightR <= 0.5 && heightR >= 0.1 && headR <= 0.8 && headR >= 0.1 && fabs(deltaAng) <= 26.6);
+}
 /////////////////////////////////
 
 
@@ -486,6 +512,7 @@ class BGSub {
     int dilation_size;
     
     VideoWriter outputVideo;
+    VideoWriter BGVideo, FGVideo, ObjVideo, DetectedVideo;
     bool save_video;
     
     // Fisheye HOG
@@ -881,8 +908,12 @@ class BGSub {
 
             save_video = _toSave;
             if (save_video) {
-				string videoName = "output/" + string(outFileName) + ".avi";
-				outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
+				string videoName = "output/" + string(outFileName);
+				outputVideo.open(videoName + ".avi", CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
+				BGVideo.open(videoName + "_BG.avi", CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
+				FGVideo.open(videoName + "_FG.avi", CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
+				ObjVideo.open(videoName + "_Obj.avi", CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
+				DetectedVideo.open(videoName + "_Detected.avi", CV_FOURCC('D','I','V','X'), 10, Size(800, 660), true);
 				//outputVideo.open(videoName, CV_FOURCC('D','I','V','X'), 10, Size(768, 768), true);
 				if (!outputVideo.isOpened()) {
 					cerr << "Could not write video." << endl;
@@ -1032,6 +1063,14 @@ class BGSub {
             morphologyEx(fgMaskMOG2, fgMaskMOG2, MORPH_CLOSE, Mat::ones(5,5,CV_8U), Point(-1,-1), 2);
             morphologyEx(fgMaskMOG2, fgMaskMOG2, MORPH_OPEN, Mat::ones(3,3,CV_8U), Point(-1,-1), 1);
 			imshow("FG Mask MOG 2", fgMaskMOG2);
+			if (save_video) {
+	            Mat foreground;
+			    pMOG2.getBackgroundImage(foreground);
+	            Mat save = Mat::zeros(fgMaskMOG2.size(), CV_8UC3);
+	            cvtColor(fgMaskMOG2, save, CV_GRAY2BGR);
+                FGVideo << save;
+                BGVideo << foreground;
+			}
             
             vector<vector<Point> > contours_foreground;
             findContours(fgMaskMOG2.clone(), contours_foreground, CV_RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
@@ -1290,13 +1329,15 @@ class BGSub {
 									best_dist = dist;
 								}
 							}
-							if (best_dist < 3*tracked_humans[best_track].getSdHead()) {
-								// Update
-								//cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
-								tracked_humans[best_track].UpdateHead(heads[head]);
-								humanHasHead[best_track] = true;
-								continue;
-							}
+		                    if (best_dist < 3*tracked_humans[best_track].getSdHead() || tracked_humans[best_track].isTrackedHeadInvalid()) {
+		                        // Update
+		                        //cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_humans[best_track].getBodyROI().center << "," << tracked_humans[best_track].getBodyROI().size << endl;
+		                        if (tracked_humans[best_track].isNewHeadLegit(heads[head])){
+		                            tracked_humans[best_track].UpdateHead(heads[head]);
+		                            humanHasHead[best_track] = true;
+		                            continue;
+		                        }
+		                    }
 							else {
 								// Outside 3 SD, should we add a new object here?
 								// TODO
@@ -1315,13 +1356,15 @@ class BGSub {
 								}
 							}
 
-							if (best_dist < 3*tracked_objects[best_track].getSdHead()) {
-								// Update
-								//cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
-								tracked_objects[best_track].UpdateHead(heads[head]);
-								objectHasHead[best_track] = true;
-								continue;
-							}
+		                    if (best_dist < 3*tracked_objects[best_track].getSdHead() || tracked_objects[best_track].isTrackedHeadInvalid()) {
+		                        // Update
+		                        //cout << "Update head:" << heads[head].center << "," << heads[head].size << " with " << tracked_objects[best_track].getBodyROI().center << "," << tracked_objects[best_track].getBodyROI().size << endl;
+		                        if (tracked_objects[best_track].isNewHeadLegit(heads[head])){
+		                            tracked_objects[best_track].UpdateHead(heads[head]);                // <----- OCCURS HERE!
+		                            objectHasHead[best_track] = true;
+		                            continue;
+		                        }
+		                    }
 							else {
 								// Outside 3 SD, should we add a new object here?
 								// TODO
@@ -1377,11 +1420,12 @@ class BGSub {
             	else {
             		// Calculate Ferns & direction
             		if (it->getStatus() == HUMAN) {
-						Point2f head_vel = it->getHeadVel();
+						//Point2f head_vel = it->getHeadVel();
+            		    Point2f head_vel = it->getBodyVel();
 						RotatedRect rect = it->getHeadROI();
 
 						float walking_dir;
-						if (norm(head_vel) < 1.5) {				// TODO Threshold adjust
+						if (norm(head_vel) < it->getBodyROI().size.width/20.) {				// TODO Threshold adjust
 							walking_dir = -1.;					// Not enough speed, no clue
 						}
 						else {
@@ -1389,7 +1433,7 @@ class BGSub {
 							walking_dir = 180. + rect.angle - atan2(head_vel.x, -head_vel.y)*180./CV_PI;
 							while (walking_dir < 0.)
 								walking_dir += 360.;					// [0, 360) range. Negative means no clue
-							while (walking_dir > 360.)
+							while (walking_dir >= 360.)
 								walking_dir -= 360.;
 						}
 						//cout << head_vel << " Moving in " << walking_dir << " degree direction" << endl;
@@ -1618,6 +1662,9 @@ class BGSub {
 				f << double(total_time)/getTickFrequency() * 1000. << endl;			// millisecond
             }
 
+            Mat objMat, detectedMat;
+            input_img.copyTo(objMat);
+            input_img.copyTo(detectedMat);
 				if (toDraw) {
 					//for(int i = 0; i < contours_foreground.size(); i++){
 					//	drawContours(input_img, contours_foreground, i, Scalar(0,255,0), 1, CV_AA);
@@ -1626,22 +1673,26 @@ class BGSub {
 						Point2f rect_points[4];
 						humans[i].points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,255,0),2,8);
+							line( detectedMat, rect_points[j], rect_points[(j+1)%4], Scalar(255,255,0),2,8);
 					}
 					for (int i = 0; i < heads.size(); i++) {
 						Point2f rect_points[4];
 						heads[i].points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,255,255),2,8);
+							line( detectedMat, rect_points[j], rect_points[(j+1)%4], Scalar(0,255,255),2,8);
 					}
 					for (int i = 0; i < objects.size(); i++) {
 						Point2f rect_points[4];
 						objects[i].points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,0,255),2,8);
+						    line( objMat, rect_points[j], rect_points[(j+1)%4], Scalar(0,0,255),2,8);
+							//line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(0,0,255),2,8);
 						rawBoxes[i].points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,0,0),1,8);
+							line( objMat, rect_points[j], rect_points[(j+1)%4], Scalar(255,255,0),1,8);
+						area_heads[i].points(rect_points);
+                        for(int j = 0; j < 4; j++)
+                            line( objMat, rect_points[j], rect_points[(j+1)%4], Scalar(0,255,0),2,8);
 					}
 
 					for (int track = 0; track < tracked_objects.size(); track++) {
@@ -1672,28 +1723,31 @@ class BGSub {
 						Point2f rect_points[4];
 						human.getBodyROI().points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(192,192,0),1,8);
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(192,192,0),2,8);
 						//circle(input_img, object.getPointBody(), 3*object.getSdBody(), Scalar(192,192,0), 2);
 
 						//circle(input_img, object.getPointHead(), 2, Scalar(192,192,192), -1);
 						human.getHeadROI().points(rect_points);
 						for(int j = 0; j < 4; j++)
-							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(255,255,255),1,8);
+							line( input_img, rect_points[j], rect_points[(j+1)%4], Scalar(64,223,0),2,8);
 						//circle(input_img, object.getPointHead(), 3*object.getSdHead(), Scalar(255,0,0), 1);
 						int dir = human.getDirection();
 						float angle = (dir - human.getHeadROI().angle)*CV_PI/180.;
-						arrowedLine(input_img, human.getPointHead(), human.getPointHead() + 50.*Point2f(sin(angle), cos(angle)), Scalar(255,255,255), 1);
+						arrowedLine(input_img, human.getPointHead(), human.getPointHead() + 50.*Point2f(sin(angle), cos(angle)), Scalar(64,223,0), 2);
 						char buffer[10];
-						arrowedLine(input_img, human.getPointHead(), human.getPointHead() + 10.*human.getHeadVel(), Scalar(0,0,255), 1);
-						sprintf(buffer, "%d, %d", angles[track], human.getDirection());
-						putText(input_img, buffer , human.getBodyROI().center+50.*Point2f(-sin(human.getHeadROI().angle*CV_PI/180.),cos(human.getHeadROI().angle*CV_PI/180.)), FONT_HERSHEY_PLAIN, 1, Scalar(255,0,255), 2);
+						//arrowedLine(input_img, human.getPointHead(), human.getPointHead() + 10.*human.getHeadVel(), Scalar(0,0,255), 1);
+						//sprintf(buffer, "%d, %d", angles[track], human.getDirection());
+						//putText(input_img, buffer , human.getBodyROI().center+50.*Point2f(-sin(human.getHeadROI().angle*CV_PI/180.),cos(human.getHeadROI().angle*CV_PI/180.)), FONT_HERSHEY_PLAIN, 1, Scalar(255,0,255), 2);
 					}
 
 					//imshow("FG Mask MOG 2", fgMaskMOG2);
 					imshow("Detection", input_img);
 				}
-				if(save_video)
+				if(save_video) {
 					outputVideo << input_img;
+					ObjVideo << objMat;
+					DetectedVideo << detectedMat;
+				}
 				//waitKey(1);
 				//std::cout << end-begin << std::endl;
 				count_img++;
@@ -1707,13 +1761,13 @@ class BGSub {
             outputBoundingBoxes.clear();
             rawBoundingBoxes.clear();
             //int j;
-            for (vector< vector<Point> >::iterator it = inputContours.begin(); it != inputContours.end(); ++it) {
+            for (vector< vector<Point> >::iterator it = inputContours.begin(); it != inputContours.end(); ) {
                 if (contourArea(*it) < area_threshold)          // Too small to be the seed
                     break;
                 vector<Point> contour_i = *it;
                 RotatedRect rect_i = minAreaRect(contour_i);
                 Point2f center_i = rect_i.center;
-                double r_i = max(rect_i.size.width, rect_i.size.height) /2.;
+                Size h_size = getHumanSize(norm(center_i - img_center));
                 vector< vector<Point> >::iterator it_j = it+1;
                 while (it_j != inputContours.end()) {
                     vector<Point> contour_j = *it_j;
@@ -1721,13 +1775,11 @@ class BGSub {
                     Point2f center_j = rect_j.center;
                     double r_j = max(rect_j.size.width, rect_j.size.height) /2.;
                     double d_ij = norm(center_i - center_j);        // Distance between 2 contours
-                    if ((d_ij - r_i - r_j) < distanceThreshold * (r_i+r_j)) {
-                        // Close - should be combined
-                        //cout << "\tMerged: " << it-inputContours.begin() << " and " << it_j-inputContours.begin() << endl;
+                    if (d_ij < h_size.height) {
                         contour_i.insert(contour_i.end(), contour_j.begin(), contour_j.end());
-                        // update bounding box
                         rect_i = minAreaRect(contour_i);
-                        r_i = max(rect_i.size.width, rect_i.size.height) /2.;
+                        center_i = rect_i.center;
+                        h_size = getHumanSize(norm(center_i-img_center));
                         it_j = inputContours.erase(it_j);
                     }
                     else {
@@ -1780,6 +1832,111 @@ class BGSub {
                 human_size.width = cvRound(1.5*human_size.width);
                 human_size.height = 2*human_size.width;
                 outputBoundingBoxes.push_back(RotatedRect(center, Size(max(w_aligned,float(human_size.width)), max(h_aligned,float(human_size.height))), theta));
+                ++it;
+            }
+            if (outputBoundingBoxes.size() > 1) {
+                vector<RotatedRect>::iterator it_bb = outputBoundingBoxes.begin(), it_bb2;
+                vector< vector<Point> >::iterator it_contour = inputContours.begin(), it_contour2;
+                for ( ; it_bb != outputBoundingBoxes.end()-1; ) {
+                    if (it_contour == inputContours.end() - 1) {
+                        std::cout << "Something wrong!" << std::endl;
+                        break;
+                        // Should not happen anyway
+                    }
+                    it_bb2 = it_bb + 1;
+                    it_contour2 = it_contour + 1;
+                    RotatedRect r1 = *it_bb;
+                    float area1 = r1.size.area();
+                    vector<Point> contour_i = *it_contour;
+                    for ( ; it_bb2 != outputBoundingBoxes.end(); ) {
+                        if (it_contour2 == inputContours.end()) {
+                            std::cout << "Something wrong 2!" << std::endl;
+                            break;
+                            // Should not happen anyway
+                        }
+                        RotatedRect r2 = *(it_bb2);
+                        float area2 = r2.size.area();
+                        vector<Point> contour_j = *it_contour2;
+
+                        vector<Point2f> v, hull;
+                        int ret = rotatedRectangleIntersection(r1,r2,v);
+                        if (ret == INTERSECT_FULL) {
+                            rawBoundingBoxes.erase(rawBoundingBoxes.begin() + (it_bb2 - outputBoundingBoxes.begin()));
+                            outputBoundingBoxes.erase(it_bb2);
+                            it_bb2 = it_bb + 1;
+                            inputContours.erase(it_contour2);
+                            it_contour2 = it_contour + 1;
+                        }
+                        else if (ret == INTERSECT_PARTIAL){
+                            float intArea;
+                            convexHull(v, hull);
+                            intArea = contourArea(hull);
+                            if (intArea/fmin(area1, area2) > 0.5) {
+                                contour_i.insert(contour_i.end(), contour_j.begin(), contour_j.end());
+                                RotatedRect rect = minAreaRect(contour_i);
+                                Point2f center = rect.center;
+                                float w = rect.size.width;
+                                float h = rect.size.height;
+                                float phi = rect.angle;
+                                rawBoundingBoxes[it_bb-outputBoundingBoxes.begin()] = rect;
+                                float theta = atan2(center.x - img_center.x, img_center.y - center.y) *180./CV_PI;
+                                if (w <= h) {
+                                    if (phi - theta > 90.)
+                                        phi -= 180.;
+                                    else if (phi - theta < -90.)
+                                        phi += 180.;
+                                }
+                                else {
+                                    float temp = w;
+                                    w = h;
+                                    h = temp;
+                                    if (phi - theta > 0.)
+                                        phi -= 90.;
+                                    else if (phi - theta < -180.)
+                                        phi += 270;
+                                    else
+                                        phi += 90.;
+                                }
+                                float delta = abs(phi - theta) * CV_PI/180.;
+                                if (delta > CV_PI/2.) {            // width < height --> 90 deg change
+                                    float temp = w;
+                                    w = h;
+                                    h = temp;
+                                    delta -= CV_PI/2.;
+                                }
+                                float w_aligned = h*sin(delta) + w*cos(delta);
+                                w_aligned *= 1.5;
+                                float h_aligned = h*cos(delta) + w*sin(delta);
+                                h_aligned *= 1.5;
+
+                                //Size human_size = getHumanSize(norm(center - img_center)) + Size(10,20);
+                                Size human_size = getHumanSize(norm(center - img_center));
+                                human_size.width = cvRound(1.5*human_size.width);
+                                human_size.height = 2*human_size.width;
+                                r1 = RotatedRect(center, Size(max(w_aligned,float(human_size.width)), max(h_aligned,float(human_size.height))), theta);
+                                *it_bb = r1;
+                                area1 = r1.size.area();
+                                rawBoundingBoxes.erase(rawBoundingBoxes.begin() + (it_bb2 - outputBoundingBoxes.begin()));
+                                outputBoundingBoxes.erase(it_bb2);
+                                it_bb2 = it_bb + 1;
+                                inputContours.erase(it_contour2);
+                                it_contour2 = it_contour + 1;
+                            }
+                            else {
+                                it_bb2++;
+                                it_contour2++;
+                            }
+                        }
+                        else {
+                            it_bb2++;
+                            it_contour2++;
+                        }
+                    }
+                    it_bb++;
+                    it_contour++;
+                    if (outputBoundingBoxes.size() == 1 || it_bb == outputBoundingBoxes.end())
+                        break;
+                }
             }
         }
 

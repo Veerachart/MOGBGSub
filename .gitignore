@@ -1,3 +1,7 @@
 /build*
 *~
 /output
+*.avi
+.cproject
+.project
+.settings/

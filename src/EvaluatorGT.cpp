@@ -72,8 +72,8 @@ private:
 	Point img_center;
 	string path_dir, path_cropped;
 	vector<string> file_list;
-	//VideoWriter outputVideo;
-	//string save_name;
+	VideoWriter outputVideo;
+	string save_name;
 	int hog_size;
 	FisheyeHOGDescriptor hog;
 	HOGDescriptor hog_original;
@@ -99,8 +99,8 @@ public:
 		ProcessDirectory(path_dir, file_list);
 		sort(file_list.begin(), file_list.end());
 
-		//save_name = "output/omni1A_test1_evaluate_GTonly.avi";
-		//outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 660), true);
+		save_name = "output/omni1A_test1_evaluate_GTonly_full.avi";
+		outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 660), true);
 		f_write << "frame,xb_gt,yb_gt,wb_gt,hb_gt,xh_gt,yh_gt,wh_gt,hh_gt,direction_gt,"
 						 "xb_result,yb_result,wb_result,hb_result,xh_result,yh_result,wh_result,hh_result,direction_result" << endl;
 		blank_line = "NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN";			// For when the ground truth is not available
@@ -185,7 +185,7 @@ public:
 			if (bodies_GT.size() == 0) {
 				imshow("Comparison", draw);
 				waitKey(1);
-				//outputVideo << draw;
+				outputVideo << draw;
 				f_write << idx << "," << blank_line << endl;
 			}
 			else {
@@ -266,16 +266,16 @@ public:
 					arrowedLine(draw, head_gt.center + shift_drawfehog, head_gt.center + shift_drawfehog + 50.*Point2f(sin(angle_gt*CV_PI/180.), -cos(angle_gt*CV_PI/180.)), Scalar(0,255,0), 2);
 					arrowedLine(draw, head_gt.center + shift_drawfehog, head_gt.center + shift_drawfehog + 50.*Point2f(sin(angle_fehog*CV_PI/180.), -cos(angle_fehog*CV_PI/180.)), Scalar(0,0,255), 2);
 
-					Mat view = visualize(visual, crop, output_angle, output_class, head_gt.angle, output_angle_original, output_class_original, descriptors, descriptors_original);
-					imshow("Visualization", view);
+					//Mat view = visualize(visual, crop, output_angle, output_class, head_gt.angle, output_angle_original, output_class_original, descriptors, descriptors_original);
+					//mshow("Visualization", view);
 
 					imshow("Comparison", draw);
-					waitKey(0);
-					//outputVideo << draw;
+					waitKey(1);
+					outputVideo << draw;
 					f_write << idx << "," << rect_gt.center.x << "," << rect_gt.center.y << "," << rect_gt.size.width << "," << rect_gt.size.height << ","
 										  << head_gt.center.x << "," << head_gt.center.y << "," << head_gt.size.width << "," << head_gt.size.height << "," << angle_gt;
 					f_write << "," << rect_gt.center.x << "," << rect_gt.center.y << "," << rect_gt.size.width << "," << rect_gt.size.height << ","
-								   << head_gt.center.x << "," << head_gt.center.y << "," << head_gt.size.width << "," << head_gt.size.height << "," << angle_fehog;
+								   << head_gt.center.x << "," << head_gt.center.y << "," << head_gt.size.width << "," << head_gt.size.height << "," << angle_result;//angle_fehog;
 					f_write << endl;
 				}
 			}
@@ -307,8 +307,8 @@ public:
 };
 
 int main (int argc, char ** argv) {
-	ifstream file_gt("/home/veerachart/Datasets/PIROPO_annotated/omni_1A/omni1A_test1/with_directions/direction_label.csv");
-	ofstream file_xysizedir("output/Results/test.csv");
+	ifstream file_gt("/home/veerachart/Datasets/PIROPO_annotated/omni_1A/omni1A_test1/with_directions/direction_label_full.csv");
+	ofstream file_xysizedir("output/Results/GTHOG_full.csv");
 	EvaluatorGT extractor(file_gt, file_xysizedir);
 
 	extractor.readFiles();

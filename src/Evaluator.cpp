@@ -106,8 +106,8 @@ public:
 		sort(file_list.begin(), file_list.end());
 
 
-		save_name = "output/evaluate_" + fileName + ".avi";
-		outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 10, Size(1600, 660), true);
+		save_name = "output/evaluate_" + fileName + "_4x.avi";
+		outputVideo.open(save_name, CV_FOURCC('D','I','V','X'), 40, Size(1600, 660), true);
 		f_write << "frame,xb_gt,yb_gt,wb_gt,hb_gt,xh_gt,yh_gt,wh_gt,hh_gt,direction_gt,"
 						 "xb_result,yb_result,wb_result,hb_result,xh_result,yh_result,wh_result,hh_result,direction_result" << endl;
 		blank_line = "NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN,NaN";			// For when the ground truth is not available
